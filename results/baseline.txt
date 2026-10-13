@@ -1,0 +1,74 @@
+RAG Evaluation Baseline
+
+Dataset:
+Stanford Speech and Language Processing, 3rd Edition
+
+Document:
+646 pages
+
+Hit Rate@5:
+80%
+CHUNKING EXPERIMENT RESULTS
+
+Evaluation Setup:
+- Total questions: 10
+- Top-K: 5
+- Embedding model: all-MiniLM-L6-v2
+- Similarity metric: Cosine
+
+1. Chunking: 300 / 30
+- Hits: 8
+- Misses: 2
+- Hit Rate@5: 80%
+
+2. Chunking: 500 / 50
+- Chunks: 4537
+- Hits: 8
+- Misses: 2
+- Hit Rate@5: 80%
+
+3. Chunking: 800 / 80
+- Chunks: 2905
+- Hits: 8
+- Misses: 2
+- Hit Rate@5: 80%
+
+4. Chunking: 1000 / 100
+- Chunks: 2325
+- Hits: 9
+- Misses: 1
+- Hit Rate@5: 90%
+
+Observation:
+The 1000/100 configuration achieved the highest Hit Rate@5
+among the tested configurations, with 9 out of 10 questions
+retrieved successfully.
+
+The other configurations (300/30, 500/50, and 800/80)
+achieved 8 out of 10 hits (80%).
+
+Next:
+Test different Top-K values using the 1000/100 configuration.
+
+
+
+
+
+
+TOP-K EXPERIMENT RESULTS
+Chunking: 1000 / 100
+
+K = 3
+Hits: 10/10
+Misses: 0
+Hit Rate@3: 100%
+
+K = 5
+Hits: 9/10
+Misses: 1
+Hit Rate@5: 90%
+
+K = 10
+Hits: 9/10
+Misses: 1
+Hit Rate@10: 90%

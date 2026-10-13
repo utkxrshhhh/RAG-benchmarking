@@ -1,0 +1,11 @@
+{
+  "questions": 10,
+  "top_k": 3,
+  "index": "rag-evaluation-1000-100",
+  "embedding_model": "all-MiniLM-L6-v2",
+  "recall_at_3": 0.658,
+  "precision_at_3": 0.433,
+  "mrr": 0.783,
+  "context_relevance": "Requires manual or semantic evaluation",
+  "faithfulness": "Requires generated answers and evaluation"
+}

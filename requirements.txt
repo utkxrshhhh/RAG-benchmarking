@@ -1,0 +1,8 @@
+# Add project dependencies here
+# Example:
+# langchain
+# sentence-transformers
+# pandas
+# numpy
+# openai
+# pytest

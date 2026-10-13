@@ -1,0 +1,412 @@
+question,expected_pages,retrieved_pages,retrieved_context,recall_at_3,precision_at_3,mrr,context_relevance_manual,faithfulness_manual
+What is self-attention?,"[""188"", ""189"", ""190"", ""191""]","[""334"", ""236"", ""188""]","Page 334: idea of attention, was first developed by Graves (2013) in the context of handwriting
+recognition. Bahdanau et al. (2015) extended the idea, named it “attention” and
+applied it to MT.
+
+Page 236: on the preceding (and current) input tokens, ignoring potentially useful information
+located to the right of the token under consideration. Bidirectional encoders over-
+come this limitation by allowing the attention mechanism to range over the entire
+input, as shown in Fig. 9.2b.
+a) A causal self-attention layer b) A bidirectional self-attention layer
+attentionattentionattentionattentionattention
+a1 a2 a3 a4 a5
+x3 x4 x5x1 x2
+attentionattentionattentionattentionattention
+a1 a2 a3 a4 a5
+x3 x4 x5x1 x2
+Figure 9.2(a) The causal transformer from Chapter 7, highlighting the attention computation at token 3. The
+attention value at each token is computed using only information seen earlier in the context. (b) Information
+flow in a bidirectional attention model. In processing each token, the model attends to all inputs, both before
+and after the current one. So attention for token 3 can draw on information from following tokens.
+
+Page 188: 7.1 • ATTENTION181
+input representationx i corresponding to the input token at positioni, and a context
+window of prior inputsx 1..xi−1, and produces an outputa i.
+In causal, left-to-right language models, the context is any of the prior words.
+That is, when processingx i, the model has access tox i as well as the representations
+of all the prior tokens in the context window (context windows consist of thousands
+of tokens) but no tokens afteri. (By contrast, in Chapter 9 we’ll generalize attention
+so it can also look ahead to future words.)
+Fig. 7.4 illustrates this flow of information in an entire causal self-attention layer,
+in which this same attention computation happens in parallel at each token position
+i. Thus a self-attention layer maps input sequences(x 1,...,x n)to output sequences
+of the same length(a 1,...,a n).
+attentionattentionSelf-Attention
+Layer
+attentionattentionattention
+a1 a2 a3 a4 a5
+x3 x4 x5x1 x2",0.25,0.333,0.333,,
+What is multi-head attention?,"[""190"", ""191""]","[""191"", ""190"", ""21""]","Page 191: The output of each of theAheads is of shape[1×d v], and so the output of the
+multi-head layer withAheads consists ofAvectors of shape[1×d v]. These are
+concatenated to produce a single output with dimensionality[1×Ad v]. Then we
+use yet another linear projectionW O∈R Adv×d to reshape it, resulting in the multi-
+head attention vectora i with the correct output shape[1×d]at each inputi. The
+dimensionalityd v of the heads is set so thatd v =d/A, which means that multihead
+attention costs about the same in parameters as having a single head.
+7.2 Transformer Blocks
+The self-attention calculation lies at the core of what’s called a transformer block,
+which, in addition to the self-attention layer, includes three other kinds of layers: (1)
+a feedforward layer, (2) residual connections, and (3) normalizing layers (colloqui-
+ally called “layer norm”).
+Fig. 7.7 illustrates a transformer block, sketching a common way of thinking
+
+Page 190: current token, or to look for particular kinds of patterns in the context.
+So inmulti-head attentionwe haveAseparate attention heads that reside inmulti-head
+attention
+parallel layers at the same depth in a model, each with its own set of parameters that
+allows the head to model different aspects of the relationships among inputs. Thus
+each headiin a self-attention layer has its own set of query, key, and value matrices:
+WQi,W Ki, andW Vi. These are used to project the inputs into separate query, key,
+and value embeddings for each head.
+When using multiple heads the model dimensiondis still used for the input
+and output, the query and key embeddings have dimensionalityd k, and the value
+embeddings are of dimensionalityd v (again, in the original transformer paperd k =
+
+Page 21: et al., 2026). For example Manning et al. (2020) showed that attention heads (Chap-
+ter 7) are sensitive to grammatical structure, with attention heads for direct objects
+attending to their verbs:
+it goes on to plug a few diversified mutual funds
+object-to-verb attention
+(1.7)",1.0,0.667,1.0,,
+What is a Transformer block?,"[""191""]","[""191"", ""185"", ""184""]","Page 191: about the block that is called theresidual stream(Elhage et al., 2021). In the resid-residual stream
+ual stream viewpoint, we consider the processing of an individual tokenithrough
+the transformer block as a single stream ofd-dimensional representations for token
+positioni. This residual stream starts with the original input vector, and the various
+components read their input from the residual stream and add their output back into
+the stream.
+The input at the bottom of the stream is an embedding for a token, which has
+dimensionalityd. This initial embedding gets passed up (byresidual connections),
+and is progressively added to by the other components of the transformer: theat-
+tention layerthat we have seen, and thefeedforward layerthat we will introduce.
+Before the attention and feedforward layer is a computation called thelayer norm.
+Thus the initial vector is passed through a layer norm and attention layer, and
+
+Page 185: 178CHAPTER7 • TRANSFORMERS ANDPRETRAINING
+embedding represents both the word and its position, and is then passed through a
+set ofLtransformer blocks.
+It’s common to think of each of these transformer blocks as part of astreamin
+which the input embedding is directly passed up to the output, while simultaneously
+being enriched by the application of various processing modules: themulti-head
+attentionlayer, feedforward networks and the layer normalization. The value of the
+stream at any layer for any input token is a vector that is the sum of the original
+embedding for that token and all the outputs from all the previous layers and blocks.
+The core intuition of the transformer, and the component that distinguishes it
+from the feedforward layers we saw in Chapter 6, is this multi-head attention layer,
+also called aself-attentionlayer. Attention can be thought of as a way to build
+contextual representations of a token’s meaning byattending toand integrating
+
+Page 184: processing an input token. A single token is embedded and passed forward in the network,
+with the feedforward and attention components adding information. The multihead attention
+layer takes inputs (not shown in detail) from the neighboring token streams. This is thus one
+column of an autoregressive transformer language model, taking an input token and outputting
+a distribution over next tokens.
+Fig. 7.1 sketches the transformer architecture following a single token as it
+passes up through the layers of the network. Each token is first converted to an
+embedding from theembedding matrixE. Recall from Chapter 6 in Section 6.5
+thatEis a linear layer that maps a token id to a vectorembeddingrepresenting that
+token. Each token in the vocabulary has an initial embedding representation inE.
+Transformers also have a special mechanism for encoding the position/index of the
+token in the input string, which is simply added to the embedding. The resulting",1.0,0.333,1.0,,
+What is BERT?,"[""234"", ""250"", ""251""]","[""238"", ""485"", ""271""]","Page 238: the three possible manipulations? Adding the[MASK]token creates a mismatch be-
+tween pretraining and downstream fine-tuning or inference, since when we employ
+the MLM model to perform a downstream task, we don’t use any[MASK]tokens. If
+
+Page 485: 1-of-N classifier to assign one of the 43 labels. The input to the BERT encoder is
+partially de-lexified; the subject and object entities are replaced in the input by their
+NER tags. This helps keep the system from overfitting to the individual lexical items
+(Zhang et al., 2017). When using BERT-type Transformers for relation extraction, it
+helps to use versions of BERT like RoBERTa (Liu et al., 2019) or spanBERT (Joshi
+et al., 2020) that don’t have two sequences separated by a[SEP]token, but instead
+form the input from a single long sequence of sentences.
+In general, if the test set is similar enough to the training set, and if there is
+enough hand-labeled data, supervised relation extraction systems can get high ac-
+
+Page 271: and retrieves these passages rather than entire documents. The query and document
+have to be made to fit in the BERT 512-token window, for example by truncating
+the query to 64 tokens and truncating the document if necessary so that it, the query,
+[CLS], and [SEP] fit in 512 tokens. The BERT system together with the linear layer
+Ucan then be fine-tuned for the relevance task by gathering a tuning dataset of",0.0,0.0,0.0,,
+What are contextual embeddings?,"[""250"", ""251"", ""252""]","[""250"", ""248"", ""250""]","Page 250: tual embeddings, each wordwwill be represented by a different vector each time it
+appears in a different context. Contextual embeddings are used in both the causal
+language models of Chapter 7 and in the encoder models of Chapter 9, although the
+embeddings created by masked language models seem to function particularly well
+as representations, so we will use those in examples.
+When a text is fed to a pretrained language model, the output of each compo-
+nent of the model (the attention heads, the feedforward network) is a representation
+that gets added into the residual stream. Each of these representations, which occur
+at every level and for every token, are calledcontextual embeddings. As we sug-contextual
+embeddings
+gested, one way to think of contextual embeddings is as vectors that encode some
+aspect of the meaning of a token in context, like a contextualized version of the static
+embeddings of Chapter 5. As such, we can use these embeddings for tasks involving
+
+Page 248: • Aword senseis a discrete representation of one aspect of the meaning of a
+word. Contextual embeddings offer a continuous high-dimensional model of
+meaning that is richer than fully discrete senses.
+
+Page 250: CHAPTER
+10
+Interpretability
+“Everything that we see is a shadow cast by that which we do not see”
+Martin Luther King, Jr., Sermon at the Detroit Council of Churches, 1961
+In this (currently stub) chapter we turn to LLMinterpretability, sometimesinterpretability
+calledmechanistic interpretability. Here researchers search for methods that will
+help us understand how language models do what they do. Much of the work fo-
+cuses on uncovering the model’s internal representations what kind of meanings they
+seem to encode, as well as the models paths for reasoning, whether we can describe
+specific “circuits”.
+10.1 Contextual Embeddings
+Let’s begin by extending the fundamental idea of embeddings that we introduce in
+Chapter 5 to see the corresponding idea in transformers and other LLM architec-
+tures. The methods of Chapter 5 like word2vec or GloVe learned a single vector
+embedding for each unique wordwin the vocabulary. By contrast, with contex-",0.333,0.667,1.0,,
+How does attention allow a model to use context?,"[""188"", ""189""]","[""188"", ""257"", ""236""]","Page 188: 7.1 • ATTENTION181
+input representationx i corresponding to the input token at positioni, and a context
+window of prior inputsx 1..xi−1, and produces an outputa i.
+In causal, left-to-right language models, the context is any of the prior words.
+That is, when processingx i, the model has access tox i as well as the representations
+of all the prior tokens in the context window (context windows consist of thousands
+of tokens) but no tokens afteri. (By contrast, in Chapter 9 we’ll generalize attention
+so it can also look ahead to future words.)
+Fig. 7.4 illustrates this flow of information in an entire causal self-attention layer,
+in which this same attention computation happens in parallel at each token position
+i. Thus a self-attention layer maps input sequences(x 1,...,x n)to output sequences
+of the same length(a 1,...,a n).
+attentionattentionSelf-Attention
+Layer
+attentionattentionattention
+a1 a2 a3 a4 a5
+x3 x4 x5x1 x2
+
+Page 257: of learning. For example, the further a model gets in a prompt, the better it tends
+to get at predicting the upcoming tokens. The information in the context is helping
+give the model more predictive power.
+The termin-context learningwas first proposed by Brown et al. (2020) in theirin-context
+learning
+introduction of the GPT3 system, to refer to either of these kinds of learning that lan-
+guage models do from their prompts. In-context learning means language models
+learning to do new tasks, better predict tokens, or generally reduce their loss dur-
+ing the forward-pass at inference-time, without any gradient-based updates to the
+model’s parameters.
+How does in-context learning work? While we don’t know for sure, there are
+some intriguing ideas. One hypothesis is based on the idea ofinduction headsinduction heads
+(Elhage et al., 2021; Olsson et al., 2022). Induction heads are the name for acircuit,
+which is a kind of abstract component of a network. The induction head circuit
+
+Page 236: on the preceding (and current) input tokens, ignoring potentially useful information
+located to the right of the token under consideration. Bidirectional encoders over-
+come this limitation by allowing the attention mechanism to range over the entire
+input, as shown in Fig. 9.2b.
+a) A causal self-attention layer b) A bidirectional self-attention layer
+attentionattentionattentionattentionattention
+a1 a2 a3 a4 a5
+x3 x4 x5x1 x2
+attentionattentionattentionattentionattention
+a1 a2 a3 a4 a5
+x3 x4 x5x1 x2
+Figure 9.2(a) The causal transformer from Chapter 7, highlighting the attention computation at token 3. The
+attention value at each token is computed using only information seen earlier in the context. (b) Information
+flow in a bidirectional attention model. In processing each token, the model attends to all inputs, both before
+and after the current one. So attention for token 3 can draw on information from following tokens.",0.5,0.333,1.0,,
+What is the difference between static and contextual embeddings?,"[""250"", ""251""]","[""251"", ""170"", ""250""]","Page 251: 244CHAPTER10 • INTERPRETABILITY
+[CLS] So long and thanks for all
+hL
+1hL
+CLS hL
+2 hL
+3 hL
+4 hL
+5 hL
+6
+E
+i+
+E
+i+
+E
+i+
+E
+i+
+E
+i+
+E
+i+
+E
+i+
+Figure 10.1The output of a BERT-style model is a contextual embedding vectorh L
+i for
+each input tokenx i.
+static embeddings represent the meaning of wordtypes(vocabulary entries), contex-
+tual embeddings represent the meaning of wordinstances: instances of a particular
+word type in a particular context. Thus where word2vec had a single vector for each
+word type, contextual embeddings provide a single vector for each instance of that
+word type in its sentential context. Contextual embeddings can thus be used for
+tasks like measuring the semantic similarity of two words in context, and are useful
+in linguistic tasks that require models of word meaning.
+10.1.1 Contextual Embeddings and Word Sense
+Words areambiguous: the same word can be used to mean different things. Inambiguous
+
+Page 170: inputs. Instead, we draw on deep learning’s ability to learn features from the data by
+representing tokens as embeddings. For this section we’ll represent each token by
+its static word2vec or GloVe embeddings that we saw how to compute in Chapter 5.
+By static embedding, we mean that each token is represented by a fixed vector that
+we train once, and then just put into a big dictionary. When we want to refer to that
+token, we grab its embedding out of the dictionary.
+However when we apply neural models to the task of language modeling (as
+we’ll see in Chapter 7) the situation is more complex, and we’ll use a more power-
+ful kind of embedding called acontextual embedding. Contextual embeddings are
+different for each time a word occurs in a different context. Furthermore, we’ll have
+the network learn these embeddings as part of the task of word prediction.
+So let’s explore the text classification domain above, but using static embeddings
+
+Page 250: tual embeddings, each wordwwill be represented by a different vector each time it
+appears in a different context. Contextual embeddings are used in both the causal
+language models of Chapter 7 and in the encoder models of Chapter 9, although the
+embeddings created by masked language models seem to function particularly well
+as representations, so we will use those in examples.
+When a text is fed to a pretrained language model, the output of each compo-
+nent of the model (the attention heads, the feedforward network) is a representation
+that gets added into the residual stream. Each of these representations, which occur
+at every level and for every token, are calledcontextual embeddings. As we sug-contextual
+embeddings
+gested, one way to think of contextual embeddings is as vectors that encode some
+aspect of the meaning of a token in context, like a contextualized version of the static
+embeddings of Chapter 5. As such, we can use these embeddings for tasks involving",1.0,0.667,1.0,,
+What are encoder models used for?,"[""234""]","[""235"", ""234"", ""235""]","Page 235: 228CHAPTER9 • MASKEDLANGUAGEMODELS
+w w w
+w w w
+w w w w w
+w w w w w
+w w w w w
+EncoderDecoder Encoder-Decoder
+Figure 9.1Three architectures for language models: decoders, encoders, and encoder-decoders. The arrows
+sketch out the information flow in the three architectures. Decoders take tokens as input and generate tokens
+as output. Encoders take tokens as input and produce an encoding (a vector representation of each token) as
+output. Encoder-decoders take tokens as input and generate a series of tokens as output.
+create classifiers, for example where the input is text and the output is a label, for
+example for sentiment or topic or other classes. This is done by fine-tuning them
+(training them on supervised data). We’ll introduce encoder models in this chapter.
+Theencoder-decodertakes as input a sequence of tokens and outputs a seriesencoder-
+decoder
+of tokens. What makes it different than the decoder-only models, is that an encoder-
+
+Page 234: Thedecoderis the architecture we’ve introduced earlier. It takes as input a seriesdecoder
+of tokens, and iteratively generates an output token one at a time. The decoder is
+the architecture used to create large language models like GPT, Claude, Llama, and
+Mistral. The information flow in decoders goes left-to-right, meaning that the model
+predicts the next word only from the prior words. Decoders are generative models,
+meaning that, given input tokens, they generate novel output tokens.
+Theencodertakes as input a sequence of tokens and outputs a vector repre-encoder
+sentation for each token. Encoders are usually masked language models, meaning
+they are trained by masking out a word, and learning to predict it by looking at sur-
+rounding words on both sides. Masked language models like BERT, RoBERTA, and
+others in the BERT family are encoder models. Encoder models are not generative
+models; they aren’t used to generate text. Instead encoder models are often used to
+
+Page 235: decoder has a much looser relationship between the input tokens and the output
+tokens, and they are used to map between different kinds of tokens. That is, in
+an encoder-decoder, the output tokens might be from a very different token-set or
+be a much longer or shorter sequence than the input token sequence. For example
+encoder-decoder architectures are used for machine translation, where the input to-
+kens are in one language and the output tokens (probably more or less of them) are
+in another language. Encoder-decoder architectures are also used for speech recog-
+nition, where the input is tokens representing speech, and the output is tokens repre-
+senting text. We’ll introduce the encoder-decoder architecture for machine transla-
+tion in Chapter 13, and for speech recognition in Chapter 16.
+These three architectures can be built out of many kinds of neural networks, but
+we’ll continue to assume here the use of the transformer.
+9.2 Bidirectional Transformer Encoders",1.0,0.333,0.5,,
+How does multi-head attention work?,"[""190"", ""191""]","[""191"", ""21"", ""191""]","Page 191: The output of each of theAheads is of shape[1×d v], and so the output of the
+multi-head layer withAheads consists ofAvectors of shape[1×d v]. These are
+concatenated to produce a single output with dimensionality[1×Ad v]. Then we
+use yet another linear projectionW O∈R Adv×d to reshape it, resulting in the multi-
+head attention vectora i with the correct output shape[1×d]at each inputi. The
+dimensionalityd v of the heads is set so thatd v =d/A, which means that multihead
+attention costs about the same in parameters as having a single head.
+7.2 Transformer Blocks
+The self-attention calculation lies at the core of what’s called a transformer block,
+which, in addition to the self-attention layer, includes three other kinds of layers: (1)
+a feedforward layer, (2) residual connections, and (3) normalizing layers (colloqui-
+ally called “layer norm”).
+Fig. 7.7 illustrates a transformer block, sketching a common way of thinking
+
+Page 21: et al., 2026). For example Manning et al. (2020) showed that attention heads (Chap-
+ter 7) are sensitive to grammatical structure, with attention heads for direct objects
+attending to their verbs:
+it goes on to plug a few diversified mutual funds
+object-to-verb attention
+(1.7)
+
+Page 191: 184CHAPTER7 • TRANSFORMERS ANDPRETRAINING
+dv =64,A=8, andd=512). Thus for each headi, we have weight layersW Qi of
+shape[d×d k],W Ki of shape[d×d k], andW Vi of shape[d×d v].
+Below are the equations for attention augmented with multiple heads; Fig. 7.6
+shows an intuition.
+qc
+i =x iWQc;k c
+j =x jWKc;v c
+j =x jWVc;∀c1≤c≤A(7.15)
+scorec(xi,x j) =
+qc
+i·k c
+j√dk
+(7.16)
+αc
+i j =softmax(score c(xi,x j))∀j≤i(7.17)
+headc
+i =
+X
+j≤i
+αc
+i jvc
+j (7.18)
+ai = (head 1⊕head 2...⊕head A)WO (7.19)
+MultiHeadAttention(xi,[x 1,···,x i−1]) =a i (7.20)
+Note in Eq. 7.20 that MultiHeadAttention is a function of the current inputx i, as
+well as all the other inputs. For the causal or left-to-right attention that we use in
+this chapter, the other inputs are only to the left, but we’ll also see a version of
+attention in Chapter 9 where attention is a function of the tokens to the right as well.
+We’ll return to this idea about causal inputs in Eq. 7.35 when we introduce the idea
+of masking the right context.",0.5,0.667,1.0,,
+How are BERT-style models used for relation extraction?,"[""485""]","[""485"", ""486"", ""483""]","Page 485: 1-of-N classifier to assign one of the 43 labels. The input to the BERT encoder is
+partially de-lexified; the subject and object entities are replaced in the input by their
+NER tags. This helps keep the system from overfitting to the individual lexical items
+(Zhang et al., 2017). When using BERT-type Transformers for relation extraction, it
+helps to use versions of BERT like RoBERTa (Liu et al., 2019) or spanBERT (Joshi
+et al., 2020) that don’t have two sequences separated by a[SEP]token, but instead
+form the input from a single long sequence of sentences.
+In general, if the test set is similar enough to the training set, and if there is
+enough hand-labeled data, supervised relation extraction systems can get high ac-
+
+Page 486: 21.2 • RELATIONEXTRACTIONALGORITHMS479
+ENCODER
+[CLS][SUBJ_PERSON]wasbornin[OBJ_LOC],Michigan
+Linear
+Classiﬁer
+p(relation|SUBJ,OBJ)
+Figure 21.6Relation extraction as a linear layer on top of an encoder (in this case BERT),
+with the subject and object entities replaced in the input by their NER tags (Zhang et al. 2017,
+Joshi et al. 2020).
+curacies. But labeling a large training set is extremely expensive and supervised
+models are brittle: they don’t generalize well to different text genres. For this rea-
+son, much research in relation extraction has focused on the semi-supervised and
+unsupervised approaches we turn to next.
+21.2.3 Semisupervised Relation Extraction via Bootstrapping
+Supervised machine learning assumes that we have lots of labeled data. Unfortu-
+nately, this is expensive. But suppose we just have a few high-precisionseed pat-
+terns, like those in Section 21.2.1, or perhaps a fewseed tuples. That’s enoughseed patterns
+
+Page 483: Figure 21.3Example sentences and labels from the TACRED dataset (Zhang et al., 2017).
+A standard dataset was also produced for the SemEval 2010 Task 8, detecting
+relations between nominals (Hendrickx et al., 2009). The dataset has 10,717 exam-
+ples, each with a pair of nominals (untyped) hand-labeled with one of 9 directed
+relations likeproduct-producer( afactorymanufacturessuits) orcomponent-whole
+(myapartmenthas a largekitchen).
+21.2 Relation Extraction Algorithms
+There are five main classes of algorithms for relation extraction:handwritten pat-
+terns,supervised machine learning,semi-supervised(viabootstrappingordis-
+tant supervision), andunsupervised. We’ll introduce each of these in the next
+sections.
+21.2.1 Using Patterns to Extract Relations
+The earliest and still common algorithm for relation extraction is lexico-syntactic
+patterns, first developed by Hearst (1992a), and therefore often calledHearst pat-
+terns. Consider the following sentence:Hearst patterns",1.0,0.333,1.0,,

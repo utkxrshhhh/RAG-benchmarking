@@ -1,0 +1,11 @@
+question,retrieved_pages,passages_scored,average_similarity,context_relevance
+What is self-attention?,"334, 236, 188",3,0.4811,High
+What is multi-head attention?,"191, 190, 21",3,0.5953,High
+What is a Transformer block?,"191, 185, 184",3,0.475,High
+What is BERT?,"238, 485, 271",3,0.5066,High
+What are contextual embeddings?,"250, 248, 250",3,0.6703,High
+How does attention allow a model to use context?,"188, 257, 236",3,0.5764,High
+What is the difference between static and contextual embeddings?,"251, 170, 250",3,0.5491,High
+What are encoder models used for?,"235, 234, 235",3,0.5988,High
+How does multi-head attention work?,"191, 21, 191",3,0.6143,High
+How are BERT-style models used for relation extraction?,"485, 486, 483",3,0.6586,High
