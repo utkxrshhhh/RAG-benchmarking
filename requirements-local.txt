@@ -1,0 +1,4 @@
+-r requirements.txt
+streamlit>=1.39,<2
+pytest>=8.0,<9
+httpx2>=2.0,<3
