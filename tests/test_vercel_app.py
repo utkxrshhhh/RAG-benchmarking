@@ -78,6 +78,18 @@ def test_benchmark_route_and_input_validation():
     assert client.post("/api/recommend", json={**CORPUS, "overlap": 300}).status_code == 422
 
 
+def test_oversized_corpus_fails_with_a_json_message():
+    oversized = {
+        "files": [{"source": "large.txt", "text": "x" * 1_500_001}],
+        "chunk_size": 600,
+        "overlap": 80,
+    }
+    response = client.post("/api/recommend", json=oversized)
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/json")
+    assert any("1.5 MB" in error["msg"] for error in response.json()["detail"])
+
+
 def test_pdf_upload_returns_text_and_json_errors():
     pdf_path = Path(__file__).parents[1] / "data" / "documents" / "2005.11401v4.pdf"
     response = client.post(

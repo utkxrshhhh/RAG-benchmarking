@@ -11,7 +11,7 @@ python -m pip install -r requirements-local.txt
 streamlit run streamlit_app.py
 ```
 
-Upload `.txt`, `.md`, `.csv`, `.json`, `.py`, `.html`, or `.pdf` files. The app keeps uploads in the current Streamlit session and does not persist them. You can tune chunk size/overlap, benchmark one or more questions, and inspect the full comparison matrix.
+Upload `.txt`, `.md`, `.csv`, `.json`, `.py`, `.html`, or `.pdf` files. PDFs must be selectable-text files under 4 MB; the combined extracted corpus is capped at 1.5 MB to stay within Vercel Function request limits. The app keeps uploads in the current browser session and does not persist them. You can tune chunk size/overlap, benchmark one or more questions, and inspect the full comparison matrix.
 
 ## Compared strategies
 
