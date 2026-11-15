@@ -1,14 +1,14 @@
 # RAG Lab — Strategy Workbench
 
-An interactive research workbench for uploading a corpus, benchmarking retrieval strategies, and getting a data-type-aware starting recommendation. The existing Pinecone evaluation scripts remain available in `src/`.
+An interactive RAG workbench with a Vercel-compatible FastAPI app and a Streamlit local workbench. Upload a corpus, benchmark retrieval strategies, and get a data-type-aware starting recommendation. The existing Pinecone evaluation scripts remain available in `src/`.
 
 ## Run the workbench
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python -m pip install -r requirements.txt
-streamlit run app.py
+python -m pip install -r requirements-local.txt
+streamlit run streamlit_app.py
 ```
 
 Upload `.txt`, `.md`, `.csv`, `.json`, `.py`, `.html`, or `.pdf` files. The app keeps uploads in the current Streamlit session and does not persist them. You can tune chunk size/overlap, benchmark one or more questions, and inspect the full comparison matrix.
@@ -24,7 +24,7 @@ The UI labels the sparse scoring methods honestly: these are not neural embeddin
 
 ## Existing Pinecone pipeline
 
-The original scripts under `src/` still support the separate Pinecone-backed experiment flow. Configure `PINECONE_API_KEY`, the matching index name, and metadata text field before running those scripts. Use `experiments/questions.json` as the sample set of questions with expected page labels.
+Vercel discovers `app.py` as a FastAPI entrypoint; it serves the web workbench and `/api/*` routes. The original scripts under `src/` still support the separate Pinecone-backed experiment flow. Install `requirements-legacy.txt`, configure `PINECONE_API_KEY`, and use `experiments/questions.json` for the sample page labels.
 
 ## Tests
 
@@ -32,4 +32,4 @@ The original scripts under `src/` still support the separate Pinecone-backed exp
 python -m pytest
 ```
 
-The upload workbench tests run independently from the Pinecone and transformer-model integrations.
+The Vercel runtime installs only the API dependencies from `requirements.txt`. `requirements-local.txt` adds the Streamlit workbench and tests; `requirements-legacy.txt` adds the optional Pinecone and transformer pipeline dependencies.
