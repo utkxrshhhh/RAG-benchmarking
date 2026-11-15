@@ -1,5 +1,5 @@
 [project]
 name = "app"
 version = "0.1.0"
-dependencies = [ "fastapi>=0.115, <1", "python-multipart>=0.0.12, <1", "pypdf>=5.0, <7", "pandas>=2.2, <4" ]
+dependencies = [ "fastapi>=0.115, <1", "python-multipart>=0.0.12, <1", "pypdf>=5.0, <7", "pandas>=2.2, <4", "ai[vercel]>=0.9, <1" ]
 requires-python = "~=3.13.0"

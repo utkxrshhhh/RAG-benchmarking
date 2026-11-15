@@ -236,5 +236,5 @@ def retrieve(docs: list[dict], query: str, top_k: int, recommendation: dict) -> 
     if not relevant:
         return (f"I couldn’t find a strong match in the uploaded corpus. For this {recommendation['data_type'].lower()} data, I’d start with **{recommendation['retrieval']}** and test your own labeled questions. Try a more specific query or add relevant documents.", [])
     sources = "\n".join(f"- **{doc['source']}** — {doc['text'][:520]}{'…' if len(doc['text']) > 520 else ''}" for _, doc in relevant)
-    answer = f"For this **{recommendation['data_type'].lower()}** corpus, start with **{recommendation['retrieval']}**. {recommendation['reason']}\n\n**Evidence retrieved from your files:**\n{sources}\n\nThis advisor compares local lexical signals; it does not generate a model-authored answer or claim semantic embeddings. Run the benchmark against relevance labels before choosing a production configuration."
+    answer = f"For this **{recommendation['data_type'].lower()}** corpus, start with **{recommendation['retrieval']}**. {recommendation['reason']}\n\n**Evidence retrieved from your files:**\n{sources}\n\nThis is a local retrieval-only fallback based on sparse lexical signals, not a model-generated answer. Validate the strategy with relevance labels before production use."
     return answer, [doc for _, doc in relevant]

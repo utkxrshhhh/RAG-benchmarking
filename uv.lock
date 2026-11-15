@@ -8,6 +8,26 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "ai"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx2" },
+    { name = "modelsdotdev" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/ef/a7b355eae1dd8c0548b26d47defdb619d45cfd4d1089573b03dc412e087b/ai-0.9.0.tar.gz", hash = "sha256:5e1b17873fde72e595c2b7a4507c30f321077ae2cb5e35d485da5b7fb635ae9f", size = 1255539, upload-time = "2026-11-04T17:54:00.617Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/d2/e9140079692df1930d1c950c56e0de5bd9e2ef83b73499b4f20133afe478/ai-0.9.0-py3-none-any.whl", hash = "sha256:108f267041cb5445a82e8a2a248ad2db7e95a081cceabf861a1371cfc04b641c", size = 219448, upload-time = "2026-11-04T17:53:59.366Z" },
+]
+
+[package.optional-dependencies]
+vercel = [
+    { name = "vercel-oidc" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.6"
 source = { registry = "https://pypi.org/simple" }
@@ -43,6 +63,7 @@ name = "app"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "ai", extra = ["vercel"] },
     { name = "fastapi" },
     { name = "pandas" },
     { name = "pypdf" },
@@ -51,6 +72,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ai", extras = ["vercel"], specifier = ">=0.9,<1" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "pandas", specifier = ">=2.2,<4" },
     { name = "pypdf", specifier = ">=5.0,<7" },
@@ -76,12 +98,68 @@ wheels = [
 ]
 
 [[package]]
+name = "h11"
+version = "0.16.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6fb3c75474d40b3052059d95df7e73351460c8588d963/h11-0.16.0.tar.gz", hash = "sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1", size = 101250, upload-time = "2025-04-24T03:35:25.427Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86", size = 37515, upload-time = "2025-04-24T03:35:24.344Z" },
+]
+
+[[package]]
+name = "httpcore2"
+version = "2.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h11" },
+    { name = "truststore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c0/61/afa9d6b7452f9eca73f73d45324eb0bb52f098fd5e6049bf6b8263be9b4e/httpcore2-2.16.0.tar.gz", hash = "sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643", size = 69886, upload-time = "2026-10-21T07:09:45.31Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/c2/ce417c397afa5181f0e3c6ff01a4d01639414e1adef08730d97571297151/httpcore2-2.16.0-py3-none-any.whl", hash = "sha256:5c4358319f2602d984ad93182c9fee5160f22e9da7babdda870a5e7c4e2dc34f", size = 85070, upload-time = "2026-10-21T07:09:42.802Z" },
+]
+
+[[package]]
+name = "httpx2"
+version = "2.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio", marker = "sys_platform != 'emscripten'" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
+    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten'" },
+    { name = "idna" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/73/5ca2cedf5e4e50423d1c258877865a6b62793633b561c58499f8aeb33b7e/httpx2-2.16.0.tar.gz", hash = "sha256:0d54c98128e8f2ff7fbbde0fca8c359e5f032edeaaaac443cdb7f31f685bcd7f", size = 103116, upload-time = "2026-10-21T07:09:46.348Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/3d/2e4bc4fd1ef9770871669adb348d612a6e4786b303a23f9935b81c48dd60/httpx2-2.16.0-py3-none-any.whl", hash = "sha256:fd2c5d7909e8d86fe92d53020c310ca0e4e431b838c207c5754b9bbf0308d49a", size = 97880, upload-time = "2026-10-21T07:09:44.01Z" },
+]
+
+[[package]]
+name = "httpx2-jsfetch"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/c4/0e5636363151a2a1795e0a77617168b9ca438e1748ec05fc9b5687f93d64/httpx2_jsfetch-1.0.tar.gz", hash = "sha256:70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60", size = 6872, upload-time = "2026-08-07T00:13:07.492Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/httpx2_jsfetch-1.0-py3-none-any.whl", hash = "sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32", size = 6382, upload-time = "2026-08-07T00:13:06.567Z" },
+]
+
+[[package]]
 name = "idna"
 version = "3.20"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f5/08/8eea9d4b8302028f3abb2c0813953f7aec26d33b7a8960ed760e65ff29fa/idna-3.20.tar.gz", hash = "sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44", size = 216463, upload-time = "2026-09-17T14:11:04.752Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl", hash = "sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c", size = 69583, upload-time = "2026-09-17T14:11:03.168Z" },
+]
+
+[[package]]
+name = "modelsdotdev"
+version = "0.20260818.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/17/34/e5d0b54bf967bee3e37cb7d8261143670a79603f6e770fb8a68d8ffcd17a/modelsdotdev-0.20260818.0.tar.gz", hash = "sha256:375e6793dc5bc731075e7631ee32b7d0a3be6a4a6cade3e3d417664dae40d8fd", size = 1087820, upload-time = "2026-08-18T08:14:47.009Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/92/242f3c5a20d64e964895a02fe5c86ae66ed09e6317be600c67012bc1addc/modelsdotdev-0.20260818.0-py3-none-any.whl", hash = "sha256:dd55b13bfd029e2a8345f7326e4239dcb8b972d2bbd174f422aa0ca59da1ad9c", size = 1096608, upload-time = "2026-08-18T08:14:45.326Z" },
 ]
 
 [[package]]
@@ -223,6 +301,15 @@ wheels = [
 ]
 
 [[package]]
+name = "truststore"
+version = "0.10.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/9f/c5201d42a484c061e528825fc8e2d565f5abd50a4ced6fb7d29c4ec99b2b/truststore-0.10.5.tar.gz", hash = "sha256:30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd", size = 28091, upload-time = "2026-10-12T22:27:31.808Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/e9/3a7820be2bb0fe53b6bc9c3be26d3d1158004e4c3ab953aa6840b955b1e9/truststore-0.10.5-py3-none-any.whl", hash = "sha256:9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c", size = 19017, upload-time = "2026-10-12T22:27:30.377Z" },
+]
+
+[[package]]
 name = "typing-extensions"
 version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -250,4 +337,27 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7a/29/6a1391d31cd00ff9e927215a224a880e1e84e826b64ba80a499e51c074d8/tzdata-2026.6.tar.gz", hash = "sha256:85d2cd9c09f81f0bb29db27759fc83af4f1e620efb814f8c5bf8b4cc4feece6d", size = 201017, upload-time = "2026-10-28T09:57:09.137Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl", hash = "sha256:0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec", size = 348210, upload-time = "2026-10-28T09:57:07.276Z" },
+]
+
+[[package]]
+name = "vercel-headers"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/94/016d2de42b653d7100d6de68f4711402660ba439d553a308d3c8e553f7ef/vercel_headers-0.8.0.tar.gz", hash = "sha256:6cf3aa1cb34772c3c708db80dba86127dfffb683158459ea1ec193c3edd2d9c1", size = 6091, upload-time = "2026-11-13T19:10:04.117Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/63/129feb85d027ba780ba5ac65ee0e74dda5953f27cd4adc94ec18b3d34052/vercel_headers-0.8.0-py3-none-any.whl", hash = "sha256:b565d966a4aff1a85410eed5f47e1edfa4c83a6d6b1870477d43bd78d16f16d5", size = 3920, upload-time = "2026-11-13T19:10:03.17Z" },
+]
+
+[[package]]
+name = "vercel-oidc"
+version = "0.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "httpx2" },
+    { name = "vercel-headers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3b/3d/34c4b523533d66c3eba95c9901d9b8634b62106093953d35acd727bef768/vercel_oidc-0.12.0.tar.gz", hash = "sha256:cf0437dd010acc147c8a8572cd22590d579eeec9d335e0717fcf32e377e900b7", size = 17064, upload-time = "2026-11-13T19:10:15.64Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/51/4771578d47e97ac1ef67b8e592fbb1cad615482571c75a7dbe48536a83b9/vercel_oidc-0.12.0-py3-none-any.whl", hash = "sha256:727e0af59f988b96964a1d5fcbde314b6ef8c139aa976113917f478e6033e660", size = 17044, upload-time = "2026-11-13T19:10:14.709Z" },
 ]

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from io import BytesIO
+from typing import Literal
 
+import ai
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, model_validator
 from pypdf import PdfReader
 
 from src.benchmark_engine import benchmark, build_chunks, recommend, retrieve
+
+logger = logging.getLogger("rag-lab")
+MODEL_ID = "anthropic/claude-sonnet-5.5"
+MAX_AGENT_SEARCHES = 2
+AGENT_TIMEOUT_SECONDS = 35
 
 app = FastAPI(title="RAG Lab", description="RAG strategy benchmarking and corpus-aware recommendations")
 
@@ -36,9 +45,15 @@ class BenchmarkRequest(CorpusRequest):
     top_k: int = Field(default=4, ge=1, le=10)
 
 
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2_000)
+
+
 class AskRequest(CorpusRequest):
     question: str = Field(min_length=2, max_length=800)
     top_k: int = Field(default=4, ge=1, le=10)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=8)
 
 
 class TextUpload:
@@ -79,17 +94,25 @@ async def health():
 async def parse_pdf(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=415, detail="Only PDF uploads use this endpoint.")
-    payload = await file.read(4_000_001)
-    if len(payload) > 4_000_000:
-        raise HTTPException(status_code=413, detail="PDFs must be 4 MB or smaller.")
     try:
-        reader = PdfReader(BytesIO(payload))
+        payload = await file.read(4_000_001)
+        if len(payload) > 4_000_000:
+            raise HTTPException(status_code=413, detail="PDFs must be 4 MB or smaller. Vercel limits function uploads to 4.5 MB.")
+        reader = PdfReader(BytesIO(payload), strict=False)
+        if reader.is_encrypted:
+            raise HTTPException(status_code=422, detail="This PDF is password-protected. Upload an unlocked copy.")
         text = "\n\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="No selectable text was found. Scanned PDFs need OCR before upload.")
+        truncated = len(text) > 2_000_000
+        return {"source": file.filename[:240], "text": text[:2_000_000], "truncated": truncated}
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="This PDF could not be read.") from exc
-    if not text:
-        raise HTTPException(status_code=422, detail="No selectable text was found in this PDF.")
-    return {"source": file.filename[:240], "text": text[:2_000_000]}
+        logger.exception("PDF extraction failed")
+        raise HTTPException(status_code=400, detail="Could not extract text from this PDF. Check that it is valid and not corrupted.") from exc
+    finally:
+        await file.close()
 
 
 @app.post("/api/recommend")
@@ -115,12 +138,121 @@ async def compare_strategies(request: BenchmarkRequest):
     return {"results": results.to_dict(orient="records"), "recommendation": recommend(docs)}
 
 
+async def run_rag_agent(
+    question: str,
+    history: list[ChatTurn],
+    docs: list[dict],
+    top_k: int,
+    advice: dict,
+) -> tuple[str, list[dict]]:
+    retrieved_by_id: dict[str, dict] = {}
+    search_calls = 0
+
+    @ai.tool
+    async def search_corpus(query: str) -> str:
+        """Search the user's uploaded corpus for evidence relevant to a question."""
+        nonlocal search_calls
+        if search_calls >= MAX_AGENT_SEARCHES:
+            return "Search limit reached. Use the evidence already returned to answer."
+        search_calls += 1
+        _, matches = retrieve(docs, query, top_k, advice)
+        if not matches:
+            return "No relevant passages were found in the uploaded files."
+        passages = []
+        for index, match in enumerate(matches, start=1):
+            doc_id = str(match.get("id") or f'{match.get("source", "document")}:{index}')
+            retrieved_by_id[doc_id] = {
+                "source": match.get("source", "uploaded document"),
+                "snippet": match.get("text", "")[:900],
+            }
+            passages.append(
+                f'[{index}] Source: {match.get("source", "uploaded document")}\n'
+                f'Passage: {match.get("text", "")[:900]}'
+            )
+        return "\n\n".join(passages)
+
+    system = (
+        "You are RAG Lab's research assistant. Use the search_corpus tool before answering. "
+        "Ground factual claims only in the returned passages and cite filenames in square brackets, "
+        "for example [guide.pdf]. If the corpus lacks evidence, say so instead of guessing. "
+        f"Corpus profile: {advice['data_type']}. Recommended starting retrieval: {advice['retrieval']}. "
+        f"Chunking: {advice['chunking']} Distance: {advice['distance']} "
+        "Describe recommendations as hypotheses to benchmark, not universal truths."
+    )
+    messages = [ai.system_message(system)]
+    for turn in history[-8:]:
+        if turn.role == "user":
+            messages.append(ai.user_message(turn.content))
+        else:
+            messages.append(ai.assistant_message(turn.content))
+    messages.append(ai.user_message(question))
+
+    agent = ai.Agent(tools=[search_corpus])
+    async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
+        async with agent.run(ai.get_model(MODEL_ID), messages) as stream:
+            async for _event in stream:
+                pass
+            answer = str(stream.output).strip()
+
+    return answer, list(retrieved_by_id.values())
+
+
+def local_answer(docs: list[dict], question: str, top_k: int, advice: dict) -> tuple[str, list[dict]]:
+    answer, matches = retrieve(docs, question, top_k, advice)
+    sources = [
+        {"source": match.get("source", "uploaded document"), "snippet": match.get("text", "")[:900]}
+        for match in matches
+    ]
+    return answer, sources
+
+
+def llm_failure_notice(error: BaseException) -> str:
+    while isinstance(error, BaseExceptionGroup) and error.exceptions:
+        error = error.exceptions[0]
+    if "valid credit card on file" in str(error).casefold():
+        return "Add a valid card in Vercel Dashboard → AI Gateway billing to enable LLM answers. Showing local retrieval results for now."
+    return "The LLM is temporarily unavailable; showing the local retrieval result instead."
+
+
 @app.post("/api/ask")
 async def ask_advisor(request: AskRequest):
     docs = make_chunks(request)
     advice = recommend(docs)
-    answer, _ = retrieve(docs, request.question, request.top_k, advice)
-    return {"answer": answer, "recommendation": advice}
+    fallback_answer, fallback_sources = local_answer(docs, request.question, request.top_k, advice)
+    try:
+        answer, sources = await run_rag_agent(
+            request.question,
+            request.history,
+            docs,
+            request.top_k,
+            advice,
+        )
+        if not answer or not sources:
+            return {
+                "answer": fallback_answer,
+                "sources": fallback_sources,
+                "recommendation": advice,
+                "mode": "retrieval-fallback",
+                "notice": "The model did not return grounded evidence, so this is a local retrieval response.",
+            }
+        return {"answer": answer, "sources": sources, "recommendation": advice, "mode": "llm"}
+    except TimeoutError:
+        return {
+            "answer": fallback_answer,
+            "sources": fallback_sources,
+            "recommendation": advice,
+            "mode": "retrieval-fallback",
+            "notice": "The LLM timed out; showing the local retrieval result instead.",
+        }
+    except Exception as exc:
+        logger.exception("RAG agent request failed")
+        return {
+            "answer": fallback_answer,
+            "sources": fallback_sources,
+            "recommendation": advice,
+            "mode": "retrieval-fallback",
+            "notice": llm_failure_notice(exc),
+        }
 
 
 PAGE = r'''<!doctype html>
@@ -133,30 +265,30 @@ PAGE = r'''<!doctype html>
 @media(max-width:850px){.layout{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}@media(max-width:520px){.shell{padding:20px 14px 48px}.top{margin-bottom:28px}.hero h1{font-size:40px}.card{padding:16px}.controls{grid-template-columns:1fr}.chat-form{align-items:stretch}.chat-form button{padding-inline:10px}}
 </style></head>
 <body><main class="shell">
-<header class="top"><div class="brand"><span>◈</span> RAG Lab</div><div class="status">LOCAL HEURISTICS · NO DATA STORED</div></header>
-<section class="hero"><div class="eyebrow">Retrieval evaluation studio</div><h1>Find the right RAG recipe for your data.</h1><p>Benchmark chunking, retrieval and sparse-distance strategies on your corpus. Ask the strategy advisor for an evidence-backed starting point.</p></section>
+<header class="top"><div class="brand"><span>◈</span> RAG Lab</div><div class="status">VERCEL AI GATEWAY · SESSION ONLY</div></header>
+<section class="hero"><div class="eyebrow">Retrieval evaluation studio</div><h1>Find the right RAG recipe for your data.</h1><p>Benchmark chunking and retrieval strategies, then ask a tool-using LLM agent for a grounded answer from your corpus.</p></section>
 <div class="layout"><div class="stack">
-<section class="card"><h2>1 · Add your corpus</h2><p>Upload text, Markdown, CSV, JSON, Python, HTML or text-based PDF files.</p><div class="drop"><input id="files" type="file" multiple accept=".txt,.md,.csv,.json,.py,.html,.pdf"><div id="file-status" class="small" aria-live="polite">Files stay in this browser session; nothing is saved.</div></div><div class="metrics"><div class="metric"><label>Documents</label><strong id="doc-count">0</strong></div><div class="metric"><label>Chunks</label><strong id="chunk-count">0</strong></div><div class="metric"><label>Data profile</label><strong id="data-type">—</strong></div><div class="metric"><label>Avg. chunk</label><strong id="avg-chunk">—</strong></div></div>
+<section class="card"><h2>1 · Add your corpus</h2><p>Upload text, Markdown, CSV, JSON, Python, HTML or text-based PDF files. PDFs must be under 4 MB and contain selectable text.</p><div class="drop"><input id="files" type="file" multiple accept=".txt,.md,.csv,.json,.py,.html,.pdf"><div id="file-status" class="small" aria-live="polite">Files stay in this browser session; nothing is saved.</div></div><div class="metrics"><div class="metric"><label>Documents</label><strong id="doc-count">0</strong></div><div class="metric"><label>Chunks</label><strong id="chunk-count">0</strong></div><div class="metric"><label>Data profile</label><strong id="data-type">—</strong></div><div class="metric"><label>Avg. chunk</label><strong id="avg-chunk">—</strong></div></div>
 <div class="controls"><div class="control"><label for="chunk-size">Chunk size</label><input id="chunk-size" type="range" min="200" max="1600" step="100" value="600"><span id="size-label" class="small">600 characters</span></div><div class="control"><label for="overlap">Overlap</label><input id="overlap" type="range" min="0" max="300" step="20" value="80"><span id="overlap-label" class="small">80 characters</span></div><div class="control"><label for="top-k">Results per question</label><input id="top-k" type="number" min="1" max="10" value="4"></div></div>
 <div class="actions"><button id="sample" class="secondary" type="button">Load sample corpus</button><button id="clear" class="secondary" type="button">Clear</button></div></section>
 <section class="card"><h2>2 · Compare strategies</h2><p>Use questions you expect real users to ask. Without labeled relevance judgments, scores are term-overlap proxies.</p><label class="small" for="questions">Benchmark questions (one per line)</label><textarea id="questions">What is self-attention?
 How does BERT create contextual embeddings?
 What is the best distance metric for semantic search?</textarea><div class="actions"><button id="run" class="primary" type="button">Run comparison</button><span id="benchmark-status" class="small" aria-live="polite"></span></div><div id="winner" class="notice"></div><div id="results" class="table-wrap hidden"></div></section>
 </div><div class="stack"><section class="card advice"><h2>Recommended starting point</h2><p>Corpus-aware configuration based on format signals.</p><div id="recommendation" class="notice">Upload documents or load the sample corpus to get a recommendation.</div><div class="strategy"><span>BM25</span><span>TF-IDF</span><span>Hybrid RRF</span><span>Cosine</span><span>Jaccard</span></div></section>
-<section class="card"><h2>Strategy advisor</h2><p>Ask about your corpus or the benchmark. Answers cite retrieved source snippets.</p><div id="chat" class="chat" aria-live="polite"></div><form id="chat-form" class="chat-form"><input id="prompt" type="text" maxlength="800" placeholder="Why hybrid search for my data?" autocomplete="off" aria-label="Ask the strategy advisor"><button class="primary" type="submit">Ask</button></form></section>
-<section class="card"><h2>What gets compared?</h2><p>Four chunk boundaries; BM25, TF-IDF, sparse term vectors, hybrid RRF and a lightweight rerank; cosine, dot product, Euclidean, Manhattan and Jaccard distances.</p><p class="notice">These are transparent lexical baselines, not neural embeddings. The advisor is heuristic-based and does not generate LLM answers. Validate with judged query/document pairs.</p></section></div></div>
+<section class="card"><h2>Strategy advisor</h2><p>Ask about your corpus. The LLM agent searches your files, cites sources and keeps recent chat context.</p><div id="chat" class="chat" aria-live="polite"></div><form id="chat-form" class="chat-form"><input id="prompt" type="text" maxlength="800" placeholder="Why hybrid search for my data?" autocomplete="off" aria-label="Ask the strategy advisor"><button class="primary" type="submit">Ask</button></form></section>
+<section class="card"><h2>What gets compared?</h2><p>Four chunk boundaries; BM25, TF-IDF, sparse term vectors, hybrid RRF and a lightweight rerank; cosine, dot product, Euclidean, Manhattan and Jaccard distances.</p><p class="notice">Ranking scores are sparse lexical baselines, not neural embeddings. Chat sends your prompt and retrieved passages to Vercel AI Gateway. Uploaded files are not persisted. Validate strategy choices with judged query/document pairs.</p></section></div></div>
 <footer class="foot">RAG Lab · Uploads are processed per request and are not retained by the server.</footer></main>
 <script>
-const state={files:[],recommendation:null};const $=id=>document.getElementById(id);const size=()=>Number($("chunk-size").value);const overlap=()=>Math.min(Number($("overlap").value),Math.floor(size()/2));const topK=()=>Math.max(1,Math.min(10,Number($("top-k").value)||4));
+const state={files:[],messages:[],recommendation:null};const $=id=>document.getElementById(id);const size=()=>Number($("chunk-size").value);const overlap=()=>Math.min(Number($("overlap").value),Math.floor(size()/2));const topK=()=>Math.max(1,Math.min(10,Number($("top-k").value)||4));
 const sample=[{source:"transformer-notes.md",text:"Self-attention lets each token compare itself with every other token in a sequence. Query, key, and value projections are used to compute contextual representations. Multi-head attention runs several attention operations in parallel.\n\nA Transformer block combines multi-head self-attention with a feed-forward network, residual connections, and layer normalization. Positional encodings provide order information."},{source:"nlp-guide.md",text:"BERT is a bidirectional encoder model pretrained with masked language modeling. Its contextual embeddings depend on both left and right context and are useful for classification and extraction. For relation extraction, BERT encodes a sentence and a classification head predicts the relation between marked entities."},{source:"retrieval-guide.md",text:"Cosine similarity compares the angle between normalized embedding vectors. It is a strong default for semantic search. Dot product is useful when the embedding model was trained for it. BM25 is a lexical ranking function that scores term overlap. Hybrid search combines lexical and dense rankings."}];
-function payload(){return{files:state.files,chunk_size:size(),overlap:overlap()}}async function api(path,body){const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw Error(data.detail||"Request failed");return data}
+function payload(){return{files:state.files,chunk_size:size(),overlap:overlap()}}async function responseJson(response,label){const raw=await response.text();let data;try{data=JSON.parse(raw)}catch{if(response.status===413)throw Error("This upload is too large for Vercel. Use a PDF under 4 MB.");if(response.status>=500)throw Error(`${label} failed on the server (HTTP ${response.status}). Try a PDF under 4 MB with selectable text.`);throw Error(`${label} returned an invalid response (HTTP ${response.status}).`)}if(!response.ok)throw Error(data.detail||`${label} failed (HTTP ${response.status}).`);return data}async function api(path,body){const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});return responseJson(response,"RAG request")}
 function showAdvice(a){state.recommendation=a;$("data-type").textContent=a.data_type;$("avg-chunk").textContent=`${a.avg_chunk} chars`;$("recommendation").innerHTML=`<span class="tag">${escapeHtml(a.retrieval)}</span><h3>${escapeHtml(a.headline)}</h3><p>${escapeHtml(a.reason)}</p><h4>Chunking</h4><p>${escapeHtml(a.chunking)}</p><h4>Distance</h4><p>${escapeHtml(a.distance)}</p>`}
 function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]))}
 function renderResults(rows){const wrap=$("results");wrap.innerHTML="";const table=document.createElement("table");table.innerHTML="<thead><tr><th>Chunking</th><th>Distance</th><th>Retrieval</th><th>Relevance</th><th>Precision@k</th><th>MRR</th><th>Latency</th></tr></thead>";const body=document.createElement("tbody");rows.slice(0,12).forEach(row=>{const tr=document.createElement("tr");[row.chunking,row.distance,row.retrieval,row.relevance,row["precision@k"],row.MRR,`${row["latency (ms)"]} ms`].forEach(value=>{const td=document.createElement("td");td.textContent=value;tr.appendChild(td)});body.appendChild(tr)});table.appendChild(body);wrap.appendChild(table);wrap.classList.remove("hidden")}
 async function refreshCorpus(){if(!state.files.length){$("doc-count").textContent="0";$("chunk-count").textContent="0";$("data-type").textContent="—";$("avg-chunk").textContent="—";$("recommendation").textContent="Upload documents or load the sample corpus to get a recommendation.";return}try{const result=await api("/api/recommend",payload());$("doc-count").textContent=result.documents;$("chunk-count").textContent=result.chunks;showAdvice(result.recommendation)}catch(error){$("file-status").textContent=error.message;$("file-status").classList.add("error")}}
 $("chunk-size").addEventListener("input",()=>{$("size-label").textContent=`${size()} characters`;if(Number($("overlap").value)>size()/2){$("overlap").value=overlap()}$("overlap-label").textContent=`${overlap()} characters`;refreshCorpus()});$("overlap").addEventListener("input",()=>{$("overlap-label").textContent=`${overlap()} characters`;refreshCorpus()});
-$("files").addEventListener("change",async event=>{state.files=[];$("file-status").classList.remove("error");for(const file of event.target.files){if(file.size>4_000_000){$("file-status").textContent=`${file.name} exceeds the 4 MB file limit.`;$("file-status").classList.add("error");continue}try{let text;if(file.name.toLowerCase().endsWith(".pdf")){const form=new FormData();form.append("file",file);const response=await fetch("/api/parse",{method:"POST",body:form});const data=await response.json();if(!response.ok)throw Error(data.detail||"PDF could not be parsed");text=data.text}else{text=await file.text()}if(text.trim())state.files.push({source:file.name,text})}catch(error){$("file-status").textContent=error.message;$("file-status").classList.add("error")}}$("file-status").textContent=`${state.files.length} file(s) ready · files stay in this browser session.`;await refreshCorpus()});
-$("sample").addEventListener("click",async()=>{state.files=sample;$("file-status").textContent="Sample research corpus loaded.";await refreshCorpus()});$("clear").addEventListener("click",()=>{state.files=[];$("files").value="";$("chat").replaceChildren();$("results").classList.add("hidden");$("winner").textContent="";$("file-status").textContent="Files stay in this browser session; nothing is saved.";refreshCorpus()});
+$("files").addEventListener("change",async event=>{const parsed=[];const failures=[];state.messages=[];$("chat").replaceChildren();$("file-status").classList.remove("error");for(const file of event.target.files){if(file.size>4_000_000){failures.push(`${file.name}: files must be under 4 MB on this deployment.`);continue}try{let text;if(file.name.toLowerCase().endsWith(".pdf")){const form=new FormData();form.append("file",file);const response=await fetch("/api/parse",{method:"POST",body:form});const data=await responseJson(response,"PDF upload");text=data.text;if(data.truncated)failures.push(`${file.name}: extracted text was truncated at 2 million characters.`)}else{text=await file.text()}if(text.trim())parsed.push({source:file.name,text});else failures.push(`${file.name}: no readable text was found.`)}catch(error){failures.push(`${file.name}: ${error.message}`)}}state.files=parsed;if(failures.length){$("file-status").textContent=`${parsed.length} file(s) loaded. ${failures[0]}`;$("file-status").classList.add("error")}else{$("file-status").textContent=`${parsed.length} file(s) ready · files stay in this browser session.`}await refreshCorpus()});
+$("sample").addEventListener("click",async()=>{state.files=sample;state.messages=[];$("chat").replaceChildren();$("file-status").textContent="Sample research corpus loaded.";await refreshCorpus()});$("clear").addEventListener("click",()=>{state.files=[];state.messages=[];$("files").value="";$("chat").replaceChildren();$("results").classList.add("hidden");$("winner").textContent="";$("file-status").textContent="Files stay in this browser session; nothing is saved.";refreshCorpus()});
 $("run").addEventListener("click",async()=>{const questions=$("questions").value.split(/\n/).map(q=>q.trim()).filter(Boolean);if(!state.files.length){$("benchmark-status").textContent="Add documents first.";return}if(!questions.length){$("benchmark-status").textContent="Add at least one question.";return}$("run").disabled=true;$("benchmark-status").textContent="Comparing strategy combinations…";try{const result=await api("/api/benchmark",{...payload(),questions,top_k:topK()});renderResults(result.results);const best=result.results[0];$("winner").textContent=`Top observed: ${best.retrieval} · ${best.chunking} chunks · ${best.distance} · relevance ${best.relevance}.`;showAdvice(result.recommendation);$("benchmark-status").textContent=`${result.results.length} configurations compared.`}catch(error){$("benchmark-status").textContent=error.message}finally{$("run").disabled=false}});
-$("chat-form").addEventListener("submit",async event=>{event.preventDefault();const question=$("prompt").value.trim();if(!question)return;if(!state.files.length){appendMessage("assistant","Upload documents or load the sample corpus before asking.");return}appendMessage("user",question);$("prompt").value="";try{const result=await api("/api/ask",{...payload(),question,top_k:topK()});showAdvice(result.recommendation);appendMessage("assistant",result.answer)}catch(error){appendMessage("assistant",error.message)}});function appendMessage(role,text){const div=document.createElement("div");div.className=`bubble ${role}`;div.innerHTML=role==="assistant"?escapeHtml(text).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/^- (.*)$/gm,"• $1").replace(/\n/g,"<br>"):escapeHtml(text);$("chat").appendChild(div);div.scrollIntoView({block:"nearest"})}
+$("chat-form").addEventListener("submit",async event=>{event.preventDefault();const question=$("prompt").value.trim();if(!question)return;if(!state.files.length){appendMessage("assistant","Upload documents or load the sample corpus before asking.");return}const history=state.messages.slice(-8);appendMessage("user",question);state.messages.push({role:"user",content:question});$("prompt").value="";try{const result=await api("/api/ask",{...payload(),question,history,top_k:topK()});showAdvice(result.recommendation);const mode=result.mode==="llm"?"LLM agent · Vercel AI Gateway":"Local retrieval fallback";const evidence=result.mode==="llm"?(result.sources||[]).map(source=>`- **${source.source}** — ${source.snippet}`).join("\n"):"";const content=`**${mode}**\n\n${result.answer}${result.notice?`\n\n${result.notice}`:""}${evidence?`\n\nRetrieved passages:\n${evidence}`:""}`;appendMessage("assistant",content);state.messages.push({role:"assistant",content:result.answer});state.messages=state.messages.slice(-8)}catch(error){appendMessage("assistant",error.message)}});function appendMessage(role,text){const div=document.createElement("div");div.className=`bubble ${role}`;div.innerHTML=role==="assistant"?escapeHtml(text).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/^- (.*)$/gm,"• $1").replace(/\n/g,"<br>"):escapeHtml(text);$("chat").appendChild(div);div.scrollIntoView({block:"nearest"})}
 </script></body></html>'''

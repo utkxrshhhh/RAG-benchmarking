@@ -20,7 +20,7 @@ Upload `.txt`, `.md`, `.csv`, `.json`, `.py`, `.html`, or `.pdf` files. The app 
 - Sparse-vector distance: cosine, dot product, Euclidean, Manhattan, and Jaccard
 - Metrics: term-overlap relevance, Precision@k, MRR, and measured latency
 
-The UI labels the sparse scoring methods honestly: these are not neural embedding vectors. The benchmark uses query-term overlap as a relevance proxy because it does not currently accept relevance labels. Use judged query/document pairs to select a production configuration; the highest-scoring result is not a universal guarantee. The strategy advisor is a retrieval-backed heuristic and does not generate LLM answers.
+The benchmark uses sparse lexical scores and query-term overlap as a relevance proxy, not neural embeddings or labeled ground truth. Use judged query/document pairs before selecting a production configuration. The chat agent uses the Vercel AI SDK for Python and Vercel AI Gateway, calls corpus search as a tool, and cites retrieved passages. Prompts and retrieved passages are sent to the Gateway; uploads are not stored by this app.
 
 ## Existing Pinecone pipeline
 
@@ -32,4 +32,4 @@ Vercel discovers `app.py` as a FastAPI entrypoint; it serves the web workbench a
 python -m pytest
 ```
 
-The Vercel runtime installs only the API dependencies from `requirements.txt`. `requirements-local.txt` adds the Streamlit workbench and tests; `requirements-legacy.txt` adds the optional Pinecone and transformer pipeline dependencies.
+The Vercel runtime installs the FastAPI, PDF, and Python AI SDK dependencies from `requirements.txt`. Vercel OIDC authenticates AI Gateway calls without a project API key. AI Gateway billing must be enabled for LLM responses; until then, the chat falls back to local retrieval. `requirements-local.txt` adds the Streamlit workbench and tests; `requirements-legacy.txt` adds the optional Pinecone and transformer pipeline dependencies.
