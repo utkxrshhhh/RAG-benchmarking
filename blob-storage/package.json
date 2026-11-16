@@ -1,0 +1,17 @@
+{
+  "name": "rag-private-blob-upload",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.x || 24.x || 26.x"
+  },
+  "overrides": {
+    "@vercel/oidc": "4.0.9",
+    "@vercel/cli-config": "0.4.0",
+    "zod": "4.6.7"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.3.1",
+    "express": "^5.1.0"
+  }
+}

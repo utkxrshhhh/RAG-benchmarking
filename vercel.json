@@ -1,0 +1,25 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "rag-api": {
+      "root": ".",
+      "framework": "fastapi",
+      "entrypoint": "app:app"
+    },
+    "blob-upload": {
+      "root": "blob-storage/",
+      "framework": "express",
+      "entrypoint": "server.js"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/blob-upload",
+      "destination": { "service": "blob-upload" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "rag-api" }
+    }
+  ]
+}

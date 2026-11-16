@@ -11,7 +11,7 @@ python -m pip install -r requirements-local.txt
 streamlit run streamlit_app.py
 ```
 
-Upload `.txt`, `.md`, `.csv`, `.json`, `.py`, `.html`, or `.pdf` files. PDFs must be selectable-text files under 4 MB; the combined extracted corpus is capped at 1.5 MB to stay within Vercel Function request limits. The app keeps uploads in the current browser session and does not persist them. You can tune chunk size/overlap, benchmark one or more questions, and inspect the full comparison matrix.
+Upload `.txt`, `.md`, `.csv`, `.json`, `.py`, `.html`, or `.pdf` files. Files up to 4 MB can be parsed for RAG; larger supported files upload directly to the private Blob store up to 2 GiB and expire after 30 days. Large files are stored but not indexed by the current synchronous RAG pipeline. The combined extracted RAG corpus is capped at 1.5 MB to stay within Vercel Function request limits.
 
 ## Compared strategies
 
@@ -20,7 +20,7 @@ Upload `.txt`, `.md`, `.csv`, `.json`, `.py`, `.html`, or `.pdf` files. PDFs mus
 - Sparse-vector distance: cosine, dot product, Euclidean, Manhattan, and Jaccard
 - Metrics: term-overlap relevance, Precision@k, MRR, and measured latency
 
-The benchmark uses sparse lexical scores and query-term overlap as a relevance proxy, not neural embeddings or labeled ground truth. Use judged query/document pairs before selecting a production configuration. The chat agent uses the Vercel AI SDK for Python and Vercel AI Gateway, calls corpus search as a tool, and cites retrieved passages. Prompts and retrieved passages are sent to the Gateway; uploads are not stored by this app.
+The benchmark uses sparse lexical scores and query-term overlap as a relevance proxy, not neural embeddings or labeled ground truth. Use judged query/document pairs before selecting a production configuration. The chat agent uses the Vercel AI SDK for Python and Vercel AI Gateway, calls corpus search as a tool, and cites retrieved passages. Prompts and retrieved passages are sent to the Gateway. Small files stay in the browser session; large files are stored privately in Blob for 30 days.
 
 ## Existing Pinecone pipeline
 
