@@ -171,10 +171,8 @@ DISTANCES = ["cosine", "dot product", "euclidean", "manhattan", "jaccard"]
 CHUNKERS = ["fixed", "sentence", "paragraph", "recursive"]
 
 
-def benchmark(docs: list[dict], queries: list[str], top_k: int = 4, chunk_size: int = 600, overlap: int = 80):
-    import pandas as pd
-
-    # Preserve complete source text so chunking variants are evaluated from the same corpus.
+def source_texts(docs: list[dict]) -> dict[str, str]:
+    """Rebuild complete source text so chunking variants are evaluated from the same corpus."""
     sources: dict[str, str] = {}
     raw_sources = {doc["source"] for doc in docs if doc.get("raw_text")}
     for doc in docs:
@@ -183,12 +181,84 @@ def benchmark(docs: list[dict], queries: list[str], top_k: int = 4, chunk_size: 
             sources[source] = doc["raw_text"]
         elif source not in raw_sources:
             sources[source] = f'{sources.get(source, "")}\n\n{doc["text"]}'.strip()
+    return sources
+
+
+def chunk_corpus(sources: dict[str, str], chunker: str, chunk_size: int, overlap: int) -> list[dict]:
+    return [
+        {"id": f"{source}:{index}", "source": source, "text": chunk}
+        for source, text in sources.items()
+        for index, chunk in enumerate(_split(text, chunk_size, overlap, chunker))
+    ]
+
+
+def retrieve_with(
+    docs: list[dict],
+    query: str,
+    top_k: int,
+    strategy: str,
+    distance: str,
+    chunker: str,
+    chunk_size: int,
+    overlap: int,
+) -> list[dict]:
+    variant_docs = chunk_corpus(source_texts(docs), chunker, chunk_size, overlap)
+    effective_distance = "cosine" if distance not in DISTANCES else distance
+    ranked = _rank(variant_docs, query, strategy, effective_distance)[:top_k]
+    return [{**doc, "score": round(score, 4)} for score, doc in ranked if score > 0]
+
+
+def passage_quality(query: str, passages: list[dict]) -> dict[str, float]:
+    """Term-overlap proxy: how well a set of retrieved passages covers the query."""
+    qterms = set(_tokens(query))
+    if not qterms or not passages:
+        return {"coverage": 0.0, "relevance": 0.0}
+    passage_terms = [set(_tokens(passage["text"])) for passage in passages]
+    covered = qterms & set().union(*passage_terms)
+    relevance = sum(len(qterms & terms) / len(qterms) for terms in passage_terms) / len(passage_terms)
+    return {"coverage": round(len(covered) / len(qterms), 3), "relevance": round(relevance, 3)}
+
+
+def select_best(rows: list[dict]) -> dict[str, Any] | None:
+    """Benchmark selector: rank configurations by a weighted composite of quality metrics, then latency."""
+    if not rows:
+        return None
+    latencies = [row["latency (ms)"] for row in rows]
+    low, high = min(latencies), max(latencies)
+
+    def composite(row: dict) -> float:
+        speed_penalty = (row["latency (ms)"] - low) / (high - low) if high > low else 0.0
+        return 0.5 * row["relevance"] + 0.3 * row["MRR"] + 0.2 * row["precision@k"] - 0.05 * speed_penalty
+
+    ranked = sorted(rows, key=composite, reverse=True)
+    best, runner_up = ranked[0], ranked[1] if len(ranked) > 1 else None
+    reason = (
+        f"{best['retrieval']} with {best['chunking']} chunks and {best['distance']} distance had the highest "
+        f"composite score (relevance {best['relevance']}, MRR {best['MRR']}, precision@k {best['precision@k']}, "
+        f"{best['latency (ms)']} ms)."
+    )
+    if runner_up:
+        reason += f" Runner-up: {runner_up['retrieval']} · {runner_up['chunking']} · {runner_up['distance']}."
+    return {
+        "retrieval": best["retrieval"],
+        "chunking": best["chunking"],
+        "distance": best["distance"],
+        "composite": round(composite(best), 3),
+        "relevance": best["relevance"],
+        "MRR": best["MRR"],
+        "precision@k": best["precision@k"],
+        "latency_ms": best["latency (ms)"],
+        "reason": reason,
+    }
+
+
+def benchmark(docs: list[dict], queries: list[str], top_k: int = 4, chunk_size: int = 600, overlap: int = 80):
+    import pandas as pd
+
+    sources = source_texts(docs)
     rows = []
     for chunker in CHUNKERS:
-        variant_docs = []
-        for source, text in sources.items():
-            for index, chunk in enumerate(_split(text, chunk_size, overlap, chunker)): 
-                variant_docs.append({"id": f"{source}:{index}", "source": source, "text": chunk})
+        variant_docs = chunk_corpus(sources, chunker, chunk_size, overlap)
         for strategy in STRATEGIES:
             applicable_distances = ["n/a (BM25)"] if strategy == "BM25 keyword" else DISTANCES
             for distance in applicable_distances:
