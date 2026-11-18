@@ -23,7 +23,9 @@ def test_vercel_fastapi_entrypoint_and_headers():
     assert response.status_code == 200
     assert "RAG Lab" in response.text
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert client.get("/api/health").json() == {"ok": True, "service": "rag-lab"}
+    health = client.get("/api/health").json()
+    assert health["ok"] is True and health["service"] == "rag-lab"
+    assert {"provider", "model", "free"} <= set(health["llm"])
 
 
 def test_recommendation_and_chat_routes(monkeypatch):
@@ -65,7 +67,7 @@ def test_llm_billing_error_returns_grounded_fallback(monkeypatch):
     response = client.post("/api/ask", json={**CORPUS, "question": "What is self-attention?"})
     assert response.status_code == 200
     assert response.json()["mode"] == "retrieval-fallback"
-    assert "valid card" in response.json()["notice"]
+    assert "GROQ_API_KEY" in response.json()["notice"]
     assert "notes.md" in response.json()["answer"]
 
 

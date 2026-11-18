@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import urllib.error
@@ -14,7 +15,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from pypdf import PdfReader
 
-from src import rag_agents
+from src import llm, rag_agents
 from src.benchmark_engine import benchmark, build_chunks, recommend, retrieve, retrieve_with, select_best
 from src.rag_agents import StrategyConfig
 
@@ -105,12 +106,14 @@ async def add_security_headers(request, call_next):
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def home():
-    return HTMLResponse(PAGE)
+    active = llm.describe()
+    status = html.escape(f'{active["provider"]} · {active["model"]}'.upper())
+    return HTMLResponse(PAGE.replace("__LLM_STATUS__", status))
 
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "service": "rag-lab"}
+    return {"ok": True, "service": "rag-lab", "llm": llm.describe()}
 
 
 @app.api_route("/api/blob-upload", methods=["POST", "DELETE"], include_in_schema=False)
@@ -333,7 +336,7 @@ async def run_rag_agent(
 
     agent = ai.Agent(tools=[search_corpus])
     async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
-        async with agent.run(ai.get_model(MODEL_ID), messages) as stream:
+        async with agent.run(llm.model_for("chat"), messages) as stream:
             async for _event in stream:
                 pass
             answer = str(stream.output).strip()
@@ -353,9 +356,18 @@ def local_answer(docs: list[dict], question: str, top_k: int, advice: dict) -> t
 def llm_failure_notice(error: BaseException) -> str:
     while isinstance(error, BaseExceptionGroup) and error.exceptions:
         error = error.exceptions[0]
-    if "valid credit card on file" in str(error).casefold():
-        return "Add a valid card in Vercel Dashboard → AI Gateway billing to enable LLM answers. Showing local retrieval results for now."
-    return "The LLM is temporarily unavailable; showing the local retrieval result instead."
+    text = str(error).casefold()
+    active = llm.describe()
+    if active["provider"] == "Vercel AI Gateway" and ("credit card" in text or "not configured" in text):
+        return (
+            "No LLM is connected yet. Add a free GROQ_API_KEY (or GEMINI_API_KEY / OPENROUTER_API_KEY) in "
+            "Settings → Vars to get chatbot answers. Showing quoted passages for now."
+        )
+    if "401" in text or "invalid api key" in text or "unauthorized" in text:
+        return f'{active["provider"]} rejected the API key. Check it in Settings → Vars. Showing quoted passages for now.'
+    if "429" in text or "rate limit" in text:
+        return f'{active["provider"]} rate limit reached. Wait a moment and try again. Showing quoted passages for now.'
+    return f'{active["provider"]} is temporarily unavailable; showing quoted passages instead.'
 
 
 @app.post("/api/ask")
@@ -412,7 +424,7 @@ PAGE = r'''<!doctype html>
 @media(max-width:850px){.layout{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}@media(max-width:520px){.shell{padding:20px 14px 48px}.top{margin-bottom:28px}.hero h1{font-size:40px}.card{padding:16px}.controls{grid-template-columns:1fr}.chat-form{align-items:stretch}.chat-form button{padding-inline:10px}}
 </style></head>
 <body><main class="shell">
-<header class="top"><div class="brand"><span>◈</span> RAG Lab</div><div class="status">VERCEL AI GATEWAY · SESSION ONLY</div></header>
+<header class="top"><div class="brand"><span>◈</span> RAG Lab</div><div class="status">__LLM_STATUS__</div></header>
 <section class="hero"><div class="eyebrow">Retrieval evaluation studio</div><h1>Find the right RAG recipe for your data.</h1><p>Benchmark chunking and retrieval strategies, then ask a tool-using LLM agent for a grounded answer from your corpus.</p></section>
 <div class="layout"><div class="stack">
 <section class="card"><h2>1 · Add your corpus</h2><p>PDFs over 4 MB and up to 2 GiB upload directly to private Blob storage with 30-day expiry. Large files are stored but not indexed; chat context remains capped at 1.5 MB of extracted text.</p><div class="drop"><input id="files" type="file" multiple accept=".txt,.md,.csv,.json,.py,.html,.pdf"><div id="file-status" class="small" aria-live="polite">Small text files stay in this browser session; large uploads are private and expire after 30 days.</div><div id="large-files" class="large-files" aria-live="polite"></div></div><div class="metrics"><div class="metric"><label>Documents</label><strong id="doc-count">0</strong></div><div class="metric"><label>Chunks</label><strong id="chunk-count">0</strong></div><div class="metric"><label>Data profile</label><strong id="data-type">—</strong></div><div class="metric"><label>Avg. chunk</label><strong id="avg-chunk">—</strong></div></div>
@@ -422,7 +434,7 @@ PAGE = r'''<!doctype html>
 How does BERT create contextual embeddings?
 What is the best distance metric for semantic search?</textarea><div class="actions"><button id="run" class="primary" type="button">Run comparison</button><span id="benchmark-status" class="small" aria-live="polite"></span></div><div id="winner" class="notice"></div><div id="results" class="table-wrap hidden"></div></section>
 </div><div class="stack"><section class="card advice"><h2>Recommended starting point</h2><p>Corpus-aware configuration based on format signals.</p><div id="recommendation" class="notice">Upload documents or load the sample corpus to get a recommendation.</div><div class="strategy"><span>BM25</span><span>TF-IDF</span><span>Hybrid RRF</span><span>Cosine</span><span>Jaccard</span></div></section>
-<section class="card"><h2>What gets compared?</h2><p>Four chunk boundaries; BM25, TF-IDF, sparse term vectors, hybrid RRF and a lightweight rerank; cosine, dot product, Euclidean, Manhattan and Jaccard distances.</p><p class="notice">Ranking scores are sparse lexical baselines, not neural embeddings. Chat sends your prompt and retrieved passages to Vercel AI Gateway. Small files stay session-only; large private Blob uploads expire after 30 days. Validate strategy choices with judged query/document pairs.</p></section></div></div>
+<section class="card"><h2>What gets compared?</h2><p>Four chunk boundaries; BM25, TF-IDF, sparse term vectors, hybrid RRF and a lightweight rerank; cosine, dot product, Euclidean, Manhattan and Jaccard distances.</p><p class="notice">Ranking scores are sparse lexical baselines, not neural embeddings. Chat sends your prompt and retrieved passages to the connected LLM (Groq, Gemini, OpenRouter or Vercel AI Gateway). Small files stay session-only; large private Blob uploads expire after 30 days. Validate strategy choices with judged query/document pairs.</p></section></div></div>
 <section class="card chatbot" aria-labelledby="chat-title"><div class="chat-head"><div><h2 id="chat-title">3 · Chat with the RAG agent</h2><p>An LLM agent with memory answers from your corpus using the benchmark-selected strategy. Switch to <strong>Compare</strong> to answer with every strategy and let the judge agent pick the best response.</p></div><div class="mode-toggle" role="radiogroup" aria-label="Answer mode"><button type="button" role="radio" aria-checked="true" data-mode="agent">Agent</button><button type="button" role="radio" aria-checked="false" data-mode="compare">Compare all strategies</button></div></div>
 <div class="chat-grid"><div class="chat-main"><div id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation"><div class="empty-chat" id="empty-chat"><strong>Start a conversation</strong><span>Load the sample corpus, run the comparison, then ask something like “What is self-attention?” or tell the agent “Remember that I prefer short answers.”</span></div></div><form id="chat-form" class="chat-form"><label for="prompt" class="sr-only">Message the RAG agent</label><textarea id="prompt" rows="1" maxlength="800" placeholder="Ask about your corpus… (Enter to send, Shift+Enter for a new line)" autocomplete="off"></textarea><button id="send" class="primary" type="submit">Send</button></form></div>
 <aside class="chat-side" aria-label="Agent settings"><div class="side-block"><h3>Active strategy</h3><label for="strategy-select" class="small">Retrieval used by the agent</label><select id="strategy-select"><option value="auto">Auto · benchmark winner</option><option>BM25 keyword</option><option>TF-IDF cosine</option><option>Sparse term vector</option><option>Hybrid RRF</option><option>Hybrid + rerank</option></select><p id="active-config" class="small">Run the comparison so the selector agent can pick the best configuration.</p></div>

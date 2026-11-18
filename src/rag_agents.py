@@ -9,10 +9,8 @@ import ai
 from pydantic import BaseModel, Field, field_validator
 
 from src.benchmark_engine import CHUNKERS, DISTANCES, STRATEGIES, _tokens, passage_quality, retrieve_with
+from src.llm import model_for
 
-CHAT_MODEL_ID = "anthropic/claude-sonnet-5.5"
-STRATEGY_MODEL_ID = "anthropic/claude-haiku-5.5"
-JUDGE_MODEL_ID = "anthropic/claude-sonnet-5.5"
 MAX_MEMORIES = 20
 MAX_AGENT_SEARCHES = 3
 CHAT_TIMEOUT_SECONDS = 40
@@ -217,7 +215,7 @@ async def run_chat_agent(
 
     agent = ai.Agent(tools=[search_corpus, remember])
     async with asyncio.timeout(CHAT_TIMEOUT_SECONDS):
-        async with agent.run(ai.get_model(CHAT_MODEL_ID), messages) as stream:
+        async with agent.run(model_for("chat"), messages) as stream:
             answer = await collect_text(stream)
 
     return answer, as_sources(list(retrieved.values())), learned
@@ -238,29 +236,55 @@ def strategy_configs(base: StrategyConfig) -> list[StrategyConfig]:
     ]
 
 
+SUMMARY_INTENT = re.compile(r"\b(summary|summari[sz]e|overview|gist|tl;?dr|about|main points?)\b", re.I)
+
+
+def parse_verdict(raw: str) -> Verdict:
+    match = re.search(r"\{.*\}", raw, re.S)
+    if not match:
+        raise ValueError("Judge did not return JSON.")
+    return Verdict.model_validate_json(match.group(0))
+
+
+def _clean_sentences(passage: dict) -> list[str]:
+    """Split a chunk into whole sentences, dropping fragments cut at chunk boundaries."""
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", passage["text"]) if part.strip()]
+    if len(parts) > 1 and parts[0][:1].islower():
+        parts = parts[1:]
+    if len(parts) > 1 and parts[-1][-1:] not in ".!?\"'":
+        parts = parts[:-1]
+    return [part for part in parts if 20 <= len(part) <= 600]
+
+
 def extractive_answer(question: str, passages: list[dict]) -> str:
-    """Local fallback: pick the passage sentences that best overlap the question."""
+    """Local fallback used when no LLM is configured: stitch together the most relevant whole sentences."""
     if not passages:
         return "This strategy did not retrieve any relevant passages for the question."
+    summary = bool(SUMMARY_INTENT.search(question))
     qterms = set(_tokens(question))
     sentences = []
-    for passage in passages:
-        for sentence in re.split(r"(?<=[.!?])\s+", passage["text"]):
+    for rank, passage in enumerate(passages):
+        for position, sentence in enumerate(_clean_sentences(passage)):
             overlap = len(qterms & set(_tokens(sentence)))
-            if overlap and 20 <= len(sentence) <= 600:
-                sentences.append((overlap, sentence.strip(), passage["source"]))
+            score = (-rank, -position) if summary else (overlap, -rank)
+            if summary or overlap:
+                sentences.append((score, sentence, passage["source"]))
     if not sentences:
         top = passages[0]
         return f'{top["text"][:420].strip()}… [{top["source"]}]'
     sentences.sort(key=lambda item: item[0], reverse=True)
-    picked, used = [], set()
+    picked: list[tuple[str, str]] = []
+    seen: list[set[str]] = []
     for _, sentence, source in sentences:
-        if sentence not in used:
-            used.add(sentence)
-            picked.append(f"{sentence} [{source}]")
-        if len(picked) == 3:
+        terms = set(_tokens(sentence))
+        if any(len(terms & other) >= 0.7 * max(1, min(len(terms), len(other))) for other in seen):
+            continue
+        seen.append(terms)
+        picked.append((sentence, source))
+        if len(picked) == (4 if summary else 3):
             break
-    return " ".join(picked)
+    lead = "Here is what the most relevant passages say:\n" if summary else ""
+    return lead + "\n".join(f"- {sentence} [{source}]" for sentence, source in picked)
 
 
 async def answer_with_strategy(
@@ -274,7 +298,7 @@ async def answer_with_strategy(
     )
     messages = [ai.system_message(system), *history_messages(history[-6:]), ai.user_message(question)]
     async with asyncio.timeout(STRATEGY_TIMEOUT_SECONDS):
-        async with ai.stream(ai.get_model(STRATEGY_MODEL_ID), messages) as stream:
+        async with ai.stream(model_for("strategy"), messages) as stream:
             return await collect_text(stream)
 
 
@@ -312,14 +336,16 @@ async def llm_verdict(question: str, candidates: list[dict], memories: list[str]
         "correct citations. Penalize claims not supported by the evidence. Pick exactly one winner using the exact "
         "strategy name. Give a 1-2 sentence reason. Also extract any durable facts the user revealed about "
         "themselves in the question (name, preferences, goals) into memories; otherwise return an empty list.\n"
+        "Respond with ONLY a JSON object, no prose or code fences, shaped like:\n"
+        '{"winner": "<strategy>", "reason": "<why>", "scores": [{"strategy": "<strategy>", "score": 0-10, '
+        '"note": "<short>"}], "memories": []}\n'
         f"{memory_block(memories)}"
     )
     messages = [ai.system_message(system), ai.user_message(f"Question: {question}\n\n{listing}")]
     async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
-        async with ai.stream(ai.get_model(JUDGE_MODEL_ID), messages, output_type=Verdict) as stream:
-            async for _event in stream:
-                pass
-            verdict: Verdict = stream.output
+        async with ai.stream(model_for("judge"), messages) as stream:
+            raw = await collect_text(stream)
+    verdict = parse_verdict(raw)
 
     names = {item["strategy"] for item in candidates}
     if verdict.winner not in names:
