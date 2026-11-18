@@ -14,7 +14,9 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from pypdf import PdfReader
 
-from src.benchmark_engine import benchmark, build_chunks, recommend, retrieve
+from src import rag_agents
+from src.benchmark_engine import benchmark, build_chunks, recommend, retrieve, retrieve_with, select_best
+from src.rag_agents import StrategyConfig
 
 logger = logging.getLogger("rag-lab")
 MODEL_ID = "anthropic/claude-sonnet-5.5"
@@ -59,6 +61,22 @@ class AskRequest(CorpusRequest):
     question: str = Field(min_length=2, max_length=800)
     top_k: int = Field(default=4, ge=1, le=10)
     history: list[ChatTurn] = Field(default_factory=list, max_length=8)
+
+
+class ChatRequest(CorpusRequest):
+    question: str = Field(min_length=1, max_length=800)
+    mode: Literal["agent", "compare"] = "agent"
+    top_k: int = Field(default=4, ge=1, le=10)
+    history: list[rag_agents.ChatTurn] = Field(default_factory=list, max_length=12)
+    memories: list[str] = Field(default_factory=list, max_length=rag_agents.MAX_MEMORIES)
+    strategy: StrategyConfig | None = None
+    leaderboard: list[dict] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_memories(self):
+        if any(len(memory) > 300 for memory in self.memories):
+            raise ValueError("Each memory must be 300 characters or fewer.")
+        return self
 
 
 class TextUpload:
@@ -169,7 +187,99 @@ async def compare_strategies(request: BenchmarkRequest):
         chunk_size=request.chunk_size,
         overlap=request.overlap,
     )
-    return {"results": results.to_dict(orient="records"), "recommendation": recommend(docs)}
+    rows = results.to_dict(orient="records")
+    return {"results": rows, "selection": select_best(rows), "recommendation": recommend(docs)}
+
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest):
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="Type a message first.")
+    docs = make_chunks(request)
+    advice = recommend(docs)
+    config = request.strategy or rag_agents.default_config(advice)
+    history = request.history[-12:]
+    heuristic_memories = rag_agents.extract_memories(question)
+
+    if request.mode == "compare":
+        arena = await rag_agents.run_strategy_arena(
+            question=question,
+            history=history,
+            memories=request.memories,
+            docs=docs,
+            base=config,
+            top_k=request.top_k,
+            chunk_size=request.chunk_size,
+            overlap=request.overlap,
+        )
+        for error in arena["errors"]:
+            logger.warning("Strategy arena degraded: %s", error)
+        verdict = arena["verdict"]
+        llm_used = verdict["judge"] == "llm"
+        return {
+            "mode": "compare",
+            "answer": arena["winner"]["answer"],
+            "sources": arena["winner"]["sources"],
+            "winner": arena["winner"]["strategy"],
+            "verdict": {key: verdict[key] for key in ("winner", "reason", "judge")},
+            "candidates": arena["candidates"],
+            "strategy": config.model_dump(),
+            "memories": rag_agents.merge_memories(request.memories, [*heuristic_memories, *verdict["memories"]]),
+            "llm": llm_used,
+            "notice": None if llm_used else llm_failure_notice(arena["errors"][0]) if arena["errors"] else None,
+        }
+
+    try:
+        answer, sources, learned = await run_chat_agent(
+            question=question,
+            history=history,
+            memories=request.memories,
+            docs=docs,
+            config=config,
+            top_k=request.top_k,
+            chunk_size=request.chunk_size,
+            overlap=request.overlap,
+            advice=advice,
+            leaderboard=request.leaderboard,
+        )
+        if not answer:
+            raise RuntimeError("The model returned an empty answer.")
+        return {
+            "mode": "agent",
+            "answer": answer,
+            "sources": sources,
+            "strategy": config.model_dump(),
+            "memories": rag_agents.merge_memories(request.memories, [*heuristic_memories, *learned]),
+            "llm": True,
+            "notice": None,
+        }
+    except Exception as exc:
+        if not isinstance(exc, TimeoutError):
+            logger.exception("Chat agent request failed")
+        passages = retrieve_with(
+            docs,
+            rag_agents.contextual_query(question, history),
+            request.top_k,
+            config.retrieval,
+            config.distance,
+            config.chunking,
+            request.chunk_size,
+            request.overlap,
+        )
+        return {
+            "mode": "agent",
+            "answer": rag_agents.extractive_answer(question, passages),
+            "sources": rag_agents.as_sources(passages),
+            "strategy": config.model_dump(),
+            "memories": rag_agents.merge_memories(request.memories, heuristic_memories),
+            "llm": False,
+            "notice": "The LLM timed out; showing an extractive answer." if isinstance(exc, TimeoutError) else llm_failure_notice(exc),
+        }
+
+
+async def run_chat_agent(**kwargs):
+    return await rag_agents.run_chat_agent(**kwargs)
 
 
 async def run_rag_agent(
@@ -296,6 +406,9 @@ PAGE = r'''<!doctype html>
 <meta name="theme-color" content="#f7f9f8"><title>RAG Lab — Strategy Workbench</title>
 <style>
 :root{color-scheme:light;--ink:#15232c;--muted:#62727d;--line:#e1e8e7;--teal:#08786e;--mint:#e8f5f1;--paper:#f7f9f8;--white:#fff;--red:#ae3e36}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}button,input,textarea{font:inherit}button{cursor:pointer}.shell{max-width:1220px;margin:auto;padding:34px 28px 70px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:42px}.brand{font-weight:800;letter-spacing:-.04em;font-size:18px}.brand span{color:var(--teal)}.status{font:12px ui-monospace,monospace;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:7px 11px}.hero{max-width:740px;margin-bottom:32px}.eyebrow{color:var(--teal);font-size:11px;font-weight:800;letter-spacing:.17em;text-transform:uppercase}.hero h1{font-size:clamp(36px,5vw,58px);letter-spacing:-.065em;line-height:1.04;margin:10px 0 13px}.hero p,.muted{color:var(--muted)}.layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.85fr);gap:20px;align-items:start}.stack{display:grid;gap:18px}.card{background:var(--white);border:1px solid var(--line);border-radius:16px;padding:20px 22px;box-shadow:0 4px 18px #142b2006}.card h2{font-size:16px;letter-spacing:-.02em;margin:0 0 6px}.card p{margin:.25rem 0;color:var(--muted);font-size:13px}.drop{margin-top:16px;border:1px dashed #adc7c1;background:#f9fcfb;border-radius:12px;padding:18px;text-align:center}.drop input{max-width:100%}.small{font-size:12px;color:var(--muted)}.large-files{display:grid;gap:7px;margin-top:10px;text-align:left}.large-file{background:var(--mint);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:12px;color:var(--ink);overflow-wrap:anywhere}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:17px}.metric{background:#f7f9f8;border:1px solid var(--line);border-radius:11px;padding:12px}.metric label{display:block;color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:700}.metric strong{display:block;margin-top:4px;font-size:18px;letter-spacing:-.04em}.controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:14px}.control label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}.control input{width:100%;accent-color:var(--teal)}textarea{width:100%;resize:vertical;min-height:94px;border:1px solid var(--line);border-radius:10px;padding:11px 12px;color:var(--ink);background:#fff;outline-color:var(--teal)}.primary{background:var(--teal);color:white;border:0;border-radius:9px;padding:10px 16px;font-weight:700}.primary:hover{background:#07675f}.secondary{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:9px 13px;font-weight:700}.actions{display:flex;gap:9px;align-items:center;margin-top:12px}.tag{display:inline-flex;background:var(--mint);color:var(--teal);border-radius:99px;padding:4px 10px;font-size:11px;font-weight:800}.advice h3{font-size:21px;line-height:1.2;letter-spacing:-.04em;margin:10px 0}.advice p{font-size:13px}.advice h4{font-size:12px;margin:18px 0 3px}.table-wrap{overflow:auto;margin-top:14px}table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}th{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.chat{display:grid;gap:10px;margin-top:12px;max-height:430px;overflow:auto}.bubble{border-radius:12px;padding:11px 13px;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}.bubble.user{background:#edf3f1;margin-left:34px}.bubble.assistant{background:#f7f9f8;border:1px solid var(--line);margin-right:14px}.chat-form{display:flex;gap:8px;margin-top:12px}.chat-form input{min-width:0;flex:1;border:1px solid var(--line);border-radius:9px;padding:10px 12px;outline-color:var(--teal)}.notice{color:var(--muted);font-size:12px;margin-top:11px}.error{color:var(--red)}.hidden{display:none}.strategy{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}.strategy span{border:1px solid var(--line);border-radius:99px;padding:5px 9px;font-size:11px;color:#465761}.foot{margin-top:22px;color:var(--muted);font-size:11px}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--ink:#e6eeeb;--muted:#a0b0b3;--line:#2c3a3d;--teal:#46b8aa;--mint:#16322e;--paper:#0d1417;--white:#141e21;--red:#ff8176}.drop{background:#101b1d;border-color:#35524d}.metric{background:#101a1c}textarea,.chat-form input{background:#0f191b;color:var(--ink)}.secondary{background:#141e21;color:var(--ink)}.bubble.user{background:#1b2c2c}.bubble.assistant{background:#101a1c}.status{color:#bdc8c7}}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}.chatbot{margin-top:20px}.chat-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}.chat-head>div:first-child{max-width:640px}.mode-toggle{display:inline-flex;border:1px solid var(--line);border-radius:10px;padding:3px;background:var(--paper)}.mode-toggle button{border:0;background:transparent;color:var(--muted);border-radius:7px;padding:7px 12px;font-size:13px;font-weight:700}.mode-toggle button[aria-checked=true]{background:var(--white);color:var(--teal);box-shadow:0 1px 3px #0001}.chat-grid{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:18px;margin-top:16px}.chat-main{display:flex;flex-direction:column;min-width:0;border:1px solid var(--line);border-radius:12px;background:var(--paper)}.chatbot .chat{max-height:560px;min-height:320px;margin:0;padding:14px;align-content:start}.empty-chat{display:grid;gap:4px;text-align:center;color:var(--muted);font-size:13px;padding:60px 20px;max-width:440px;margin:auto}.empty-chat strong{color:var(--ink);font-size:15px}.chatbot .chat-form{margin:0;padding:10px;border-top:1px solid var(--line);background:var(--white);border-radius:0 0 12px 12px;align-items:flex-end}.chatbot .chat-form textarea{min-height:42px;max-height:160px;resize:none;flex:1}.chatbot .bubble.user{margin-left:auto;max-width:80%;background:var(--teal);color:#fff}.chatbot .bubble{white-space:normal}.chatbot .bubble.assistant{max-width:94%;background:var(--white)}.bubble .meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;white-space:normal}.pill{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:99px;padding:2px 8px;font-size:11px;color:var(--muted);font-weight:600}.pill.win{background:var(--mint);color:var(--teal);border-color:transparent}.bubble .reason{margin-top:8px;padding:8px 10px;background:var(--mint);border-radius:8px;font-size:12px;white-space:normal}.bubble details{margin-top:10px;white-space:normal}.bubble summary{cursor:pointer;font-size:12px;font-weight:700;color:var(--teal)}.arena{display:grid;gap:10px;margin-top:10px}.cand{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--paper)}.cand.winner{border-color:var(--teal);box-shadow:inset 3px 0 0 var(--teal)}.cand-head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline}.cand-head strong{font-size:13px}.cand-body{margin-top:6px;font-size:13px}.cand .stats{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.cand .note{font-size:12px;color:var(--muted);margin-top:6px}.sources{display:grid;gap:6px;margin-top:6px}.src{font-size:12px;color:var(--muted);border-left:2px solid var(--line);padding-left:8px}.src b{color:var(--ink)}.typing{color:var(--muted);font-size:13px}.chat-side{display:grid;gap:14px;align-content:start}.side-block{border:1px solid var(--line);border-radius:12px;padding:14px}.side-block h3{font-size:13px;margin:0 0 6px}.side-title{display:flex;justify-content:space-between;align-items:center}.side-block select{width:100%;margin-top:4px;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--white);color:var(--ink)}.memory-list{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px;max-height:220px;overflow:auto}.memory-list li{display:flex;gap:6px;justify-content:space-between;align-items:flex-start;background:var(--paper);border-radius:8px;padding:6px 8px;font-size:12px}.memory-list li.none{color:var(--muted)}.memory-list button{border:0;background:transparent;color:var(--muted);font-size:14px;line-height:1;padding:2px 4px}.memory-list button:hover{color:var(--red)}.side-block .actions{margin-top:10px}.side-block .secondary{padding:6px 10px;font-size:12px}
+@media(prefers-color-scheme:dark){.chatbot .bubble.user{background:#1f5f58}.side-block select{background:#0f191b}}
+@media(max-width:850px){.chat-grid{grid-template-columns:1fr}.chat-side{grid-template-columns:1fr 1fr}}@media(max-width:560px){.chat-side{grid-template-columns:1fr}}
 @media(max-width:850px){.layout{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}@media(max-width:520px){.shell{padding:20px 14px 48px}.top{margin-bottom:28px}.hero h1{font-size:40px}.card{padding:16px}.controls{grid-template-columns:1fr}.chat-form{align-items:stretch}.chat-form button{padding-inline:10px}}
 </style></head>
 <body><main class="shell">
@@ -309,11 +422,14 @@ PAGE = r'''<!doctype html>
 How does BERT create contextual embeddings?
 What is the best distance metric for semantic search?</textarea><div class="actions"><button id="run" class="primary" type="button">Run comparison</button><span id="benchmark-status" class="small" aria-live="polite"></span></div><div id="winner" class="notice"></div><div id="results" class="table-wrap hidden"></div></section>
 </div><div class="stack"><section class="card advice"><h2>Recommended starting point</h2><p>Corpus-aware configuration based on format signals.</p><div id="recommendation" class="notice">Upload documents or load the sample corpus to get a recommendation.</div><div class="strategy"><span>BM25</span><span>TF-IDF</span><span>Hybrid RRF</span><span>Cosine</span><span>Jaccard</span></div></section>
-<section class="card"><h2>Strategy advisor</h2><p>Ask about your corpus. The LLM agent searches your files, cites sources and keeps recent chat context.</p><div id="chat" class="chat" aria-live="polite"></div><form id="chat-form" class="chat-form"><input id="prompt" type="text" maxlength="800" placeholder="Why hybrid search for my data?" autocomplete="off" aria-label="Ask the strategy advisor"><button class="primary" type="submit">Ask</button></form></section>
 <section class="card"><h2>What gets compared?</h2><p>Four chunk boundaries; BM25, TF-IDF, sparse term vectors, hybrid RRF and a lightweight rerank; cosine, dot product, Euclidean, Manhattan and Jaccard distances.</p><p class="notice">Ranking scores are sparse lexical baselines, not neural embeddings. Chat sends your prompt and retrieved passages to Vercel AI Gateway. Small files stay session-only; large private Blob uploads expire after 30 days. Validate strategy choices with judged query/document pairs.</p></section></div></div>
+<section class="card chatbot" aria-labelledby="chat-title"><div class="chat-head"><div><h2 id="chat-title">3 · Chat with the RAG agent</h2><p>An LLM agent with memory answers from your corpus using the benchmark-selected strategy. Switch to <strong>Compare</strong> to answer with every strategy and let the judge agent pick the best response.</p></div><div class="mode-toggle" role="radiogroup" aria-label="Answer mode"><button type="button" role="radio" aria-checked="true" data-mode="agent">Agent</button><button type="button" role="radio" aria-checked="false" data-mode="compare">Compare all strategies</button></div></div>
+<div class="chat-grid"><div class="chat-main"><div id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation"><div class="empty-chat" id="empty-chat"><strong>Start a conversation</strong><span>Load the sample corpus, run the comparison, then ask something like “What is self-attention?” or tell the agent “Remember that I prefer short answers.”</span></div></div><form id="chat-form" class="chat-form"><label for="prompt" class="sr-only">Message the RAG agent</label><textarea id="prompt" rows="1" maxlength="800" placeholder="Ask about your corpus… (Enter to send, Shift+Enter for a new line)" autocomplete="off"></textarea><button id="send" class="primary" type="submit">Send</button></form></div>
+<aside class="chat-side" aria-label="Agent settings"><div class="side-block"><h3>Active strategy</h3><label for="strategy-select" class="small">Retrieval used by the agent</label><select id="strategy-select"><option value="auto">Auto · benchmark winner</option><option>BM25 keyword</option><option>TF-IDF cosine</option><option>Sparse term vector</option><option>Hybrid RRF</option><option>Hybrid + rerank</option></select><p id="active-config" class="small">Run the comparison so the selector agent can pick the best configuration.</p></div>
+<div class="side-block"><div class="side-title"><h3>Memory</h3><span id="memory-count" class="tag">0</span></div><p class="small">Facts the agent learned this session. They are sent with every message.</p><ul id="memory-list" class="memory-list"></ul><div class="actions"><button id="clear-memory" class="secondary" type="button">Forget all</button><button id="clear-chat" class="secondary" type="button">New chat</button></div></div></aside></div></section>
 <footer class="foot">RAG Lab · Small uploads are session-only; large private Blob files expire after 30 days.</footer></main>
 <script>
-const state={files:[],largeUploads:[],messages:[],recommendation:null};const $=id=>document.getElementById(id);const size=()=>Number($("chunk-size").value);const overlap=()=>Math.min(Number($("overlap").value),Math.floor(size()/2));const topK=()=>Math.max(1,Math.min(10,Number($("top-k").value)||4));
+const state={files:[],largeUploads:[],messages:[],memories:[],recommendation:null,selection:null,leaderboard:[],mode:"agent",busy:false};const $=id=>document.getElementById(id);const size=()=>Number($("chunk-size").value);const overlap=()=>Math.min(Number($("overlap").value),Math.floor(size()/2));const topK=()=>Math.max(1,Math.min(10,Number($("top-k").value)||4));
 const sample=[{source:"transformer-notes.md",text:"Self-attention lets each token compare itself with every other token in a sequence. Query, key, and value projections are used to compute contextual representations. Multi-head attention runs several attention operations in parallel.\n\nA Transformer block combines multi-head self-attention with a feed-forward network, residual connections, and layer normalization. Positional encodings provide order information."},{source:"nlp-guide.md",text:"BERT is a bidirectional encoder model pretrained with masked language modeling. Its contextual embeddings depend on both left and right context and are useful for classification and extraction. For relation extraction, BERT encodes a sentence and a classification head predicts the relation between marked entities."},{source:"retrieval-guide.md",text:"Cosine similarity compares the angle between normalized embedding vectors. It is a strong default for semantic search. Dot product is useful when the embedding model was trained for it. BM25 is a lexical ranking function that scores term overlap. Hybrid search combines lexical and dense rankings."}];
 function payload(){return{files:state.files,chunk_size:size(),overlap:overlap()}}async function responseJson(response,label){const raw=await response.text();let data;try{data=JSON.parse(raw)}catch{if(response.status===413)throw Error("This upload is too large for Vercel. Use a PDF under 4 MB.");if(response.status>=500)throw Error(`${label} failed on the server (HTTP ${response.status}). Try a PDF under 4 MB with selectable text.`);throw Error(`${label} returned an invalid response (HTTP ${response.status}).`)}if(!response.ok){const detail=Array.isArray(data.detail)?data.detail.map(item=>item.msg||"").filter(Boolean).join(". "):data.detail;throw Error(detail||`${label} failed (HTTP ${response.status}).`)}return data}async function api(path,body){const response=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});return responseJson(response,"RAG request")}
 function showAdvice(a){state.recommendation=a;$("data-type").textContent=a.data_type;$("avg-chunk").textContent=`${a.avg_chunk} chars`;$("recommendation").innerHTML=`<span class="tag">${escapeHtml(a.retrieval)}</span><h3>${escapeHtml(a.headline)}</h3><p>${escapeHtml(a.reason)}</p><h4>Chunking</h4><p>${escapeHtml(a.chunking)}</p><h4>Distance</h4><p>${escapeHtml(a.distance)}</p>`}
@@ -324,8 +440,31 @@ async function storeLargeFile(file){const {upload}=await import("https://esm.sh/
 function renderResults(rows){const wrap=$("results");wrap.innerHTML="";const table=document.createElement("table");table.innerHTML="<thead><tr><th>Chunking</th><th>Distance</th><th>Retrieval</th><th>Relevance</th><th>Precision@k</th><th>MRR</th><th>Latency</th></tr></thead>";const body=document.createElement("tbody");rows.slice(0,12).forEach(row=>{const tr=document.createElement("tr");[row.chunking,row.distance,row.retrieval,row.relevance,row["precision@k"],row.MRR,`${row["latency (ms)"]} ms`].forEach(value=>{const td=document.createElement("td");td.textContent=value;tr.appendChild(td)});body.appendChild(tr)});table.appendChild(body);wrap.appendChild(table);wrap.classList.remove("hidden")}
 async function refreshCorpus(){if(!state.files.length){$("doc-count").textContent="0";$("chunk-count").textContent="0";$("data-type").textContent="—";$("avg-chunk").textContent="—";$("recommendation").textContent="Upload documents or load the sample corpus to get a recommendation.";return}try{const result=await api("/api/recommend",payload());$("doc-count").textContent=result.documents;$("chunk-count").textContent=result.chunks;showAdvice(result.recommendation)}catch(error){$("file-status").textContent=error.message;$("file-status").classList.add("error")}}
 $("chunk-size").addEventListener("input",()=>{$("size-label").textContent=`${size()} characters`;if(Number($("overlap").value)>size()/2){$("overlap").value=overlap()}$("overlap-label").textContent=`${overlap()} characters`;refreshCorpus()});$("overlap").addEventListener("input",()=>{$("overlap-label").textContent=`${overlap()} characters`;refreshCorpus()});
-$("files").addEventListener("change",async event=>{const parsed=[];const failures=[];let textBytes=0;state.messages=[];$("chat").replaceChildren();$("file-status").classList.remove("error");for(const file of event.target.files){if(file.size>2*1024**3){failures.push(`${file.name}: maximum private Blob upload is 2 GiB.`);continue}try{if(file.size>4_000_000){await storeLargeFile(file);continue}let text;if(file.name.toLowerCase().endsWith(".pdf")){const form=new FormData();form.append("file",file);const response=await fetch("/api/parse",{method:"POST",body:form});const data=await responseJson(response,"PDF upload");text=data.text}else{text=await file.text()}const nextBytes=new TextEncoder().encode(text).byteLength;if(text.trim()&&textBytes+nextBytes<=1_500_000){textBytes+=nextBytes;parsed.push({source:file.name,text})}else if(text.trim()){await storeLargeFile(file)}else failures.push(`${file.name}: no readable text was found.`)}catch(error){if(error.message.includes("Extracted text exceeds 1.5 MB")){try{await storeLargeFile(file)}catch(blobError){failures.push(`${file.name}: ${blobError.message}`)}}else failures.push(`${file.name}: ${error.message}`)}}state.files=parsed;renderLargeFiles();if(failures.length){$("file-status").textContent=`${parsed.length} RAG-ready file(s), ${state.largeUploads.length} private stored file(s). ${failures[0]}`;$("file-status").classList.add("error")}else if(state.largeUploads.length){$("file-status").textContent=`${parsed.length} RAG-ready file(s); ${state.largeUploads.length} large file(s) stored privately for 30 days. Large files are not indexed yet.`}else{$("file-status").textContent=`${parsed.length} file(s) ready · files stay in this browser session.`}await refreshCorpus()});
-$("sample").addEventListener("click",async()=>{state.files=sample;state.messages=[];$("chat").replaceChildren();$("file-status").textContent="Sample research corpus loaded.";await refreshCorpus()});$("clear").addEventListener("click",async()=>{const retained=[];for(const item of state.largeUploads){try{const response=await fetch("/api/blob-upload",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({pathname:item.pathname})});await responseJson(response,"Delete upload")}catch{retained.push(item)}}state.files=[];state.largeUploads=retained;state.messages=[];$("files").value="";$("chat").replaceChildren();$("results").classList.add("hidden");$("winner").textContent="";renderLargeFiles();$("file-status").textContent=retained.length?"Could not delete every private Blob; remaining files expire automatically after 30 days.":"Cleared this session and deleted its private Blob uploads.";refreshCorpus()});
-$("run").addEventListener("click",async()=>{const questions=$("questions").value.split(/\n/).map(q=>q.trim()).filter(Boolean);if(!state.files.length){$("benchmark-status").textContent="Add documents first.";return}if(!questions.length){$("benchmark-status").textContent="Add at least one question.";return}$("run").disabled=true;$("benchmark-status").textContent="Comparing strategy combinations…";try{const result=await api("/api/benchmark",{...payload(),questions,top_k:topK()});renderResults(result.results);const best=result.results[0];$("winner").textContent=`Top observed: ${best.retrieval} · ${best.chunking} chunks · ${best.distance} · relevance ${best.relevance}.`;showAdvice(result.recommendation);$("benchmark-status").textContent=`${result.results.length} configurations compared.`}catch(error){$("benchmark-status").textContent=error.message}finally{$("run").disabled=false}});
-$("chat-form").addEventListener("submit",async event=>{event.preventDefault();const question=$("prompt").value.trim();if(!question)return;if(!state.files.length){appendMessage("assistant",state.largeUploads.length?"Your large file is stored privately, but large-file indexing is not enabled yet. Chat currently searches extracted text up to 1.5 MB.":"Upload documents or load the sample corpus before asking.");return}const history=state.messages.slice(-8);appendMessage("user",question);state.messages.push({role:"user",content:question});$("prompt").value="";try{const result=await api("/api/ask",{...payload(),question,history,top_k:topK()});showAdvice(result.recommendation);const mode=result.mode==="llm"?"LLM agent · Vercel AI Gateway":"Local retrieval fallback";const evidence=result.mode==="llm"?(result.sources||[]).map(source=>`- **${source.source}** — ${source.snippet}`).join("\n"):"";const content=`**${mode}**\n\n${result.answer}${result.notice?`\n\n${result.notice}`:""}${evidence?`\n\nRetrieved passages:\n${evidence}`:""}`;appendMessage("assistant",content);state.messages.push({role:"assistant",content:result.answer});state.messages=state.messages.slice(-8)}catch(error){appendMessage("assistant",error.message)}});function appendMessage(role,text){const div=document.createElement("div");div.className=`bubble ${role}`;div.innerHTML=role==="assistant"?escapeHtml(text).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/^- (.*)$/gm,"• $1").replace(/\n/g,"<br>"):escapeHtml(text);$("chat").appendChild(div);div.scrollIntoView({block:"nearest"})}
+$("files").addEventListener("change",async event=>{const parsed=[];const failures=[];let textBytes=0;resetChat();$("file-status").classList.remove("error");for(const file of event.target.files){if(file.size>2*1024**3){failures.push(`${file.name}: maximum private Blob upload is 2 GiB.`);continue}try{if(file.size>4_000_000){await storeLargeFile(file);continue}let text;if(file.name.toLowerCase().endsWith(".pdf")){const form=new FormData();form.append("file",file);const response=await fetch("/api/parse",{method:"POST",body:form});const data=await responseJson(response,"PDF upload");text=data.text}else{text=await file.text()}const nextBytes=new TextEncoder().encode(text).byteLength;if(text.trim()&&textBytes+nextBytes<=1_500_000){textBytes+=nextBytes;parsed.push({source:file.name,text})}else if(text.trim()){await storeLargeFile(file)}else failures.push(`${file.name}: no readable text was found.`)}catch(error){if(error.message.includes("Extracted text exceeds 1.5 MB")){try{await storeLargeFile(file)}catch(blobError){failures.push(`${file.name}: ${blobError.message}`)}}else failures.push(`${file.name}: ${error.message}`)}}state.files=parsed;renderLargeFiles();if(failures.length){$("file-status").textContent=`${parsed.length} RAG-ready file(s), ${state.largeUploads.length} private stored file(s). ${failures[0]}`;$("file-status").classList.add("error")}else if(state.largeUploads.length){$("file-status").textContent=`${parsed.length} RAG-ready file(s); ${state.largeUploads.length} large file(s) stored privately for 30 days. Large files are not indexed yet.`}else{$("file-status").textContent=`${parsed.length} file(s) ready · files stay in this browser session.`}await refreshCorpus()});
+$("sample").addEventListener("click",async()=>{state.files=sample;resetChat();$("file-status").textContent="Sample research corpus loaded.";await refreshCorpus()});$("clear").addEventListener("click",async()=>{const retained=[];for(const item of state.largeUploads){try{const response=await fetch("/api/blob-upload",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({pathname:item.pathname})});await responseJson(response,"Delete upload")}catch{retained.push(item)}}state.files=[];state.largeUploads=retained;$("files").value="";resetChat();$("results").classList.add("hidden");$("winner").textContent="";state.selection=null;state.leaderboard=[];renderActiveConfig();renderLargeFiles();$("file-status").textContent=retained.length?"Could not delete every private Blob; remaining files expire automatically after 30 days.":"Cleared this session and deleted its private Blob uploads.";refreshCorpus()});
+$("run").addEventListener("click",async()=>{const questions=$("questions").value.split(/\n/).map(q=>q.trim()).filter(Boolean);if(!state.files.length){$("benchmark-status").textContent="Add documents first.";return}if(!questions.length){$("benchmark-status").textContent="Add at least one question.";return}$("run").disabled=true;$("benchmark-status").textContent="Comparing strategy combinations…";try{const result=await api("/api/benchmark",{...payload(),questions,top_k:topK()});renderResults(result.results);state.selection=result.selection;state.leaderboard=result.results.slice(0,5);const pick=result.selection;$("winner").innerHTML=pick?`<span class="tag">Selector agent pick</span> <strong>${escapeHtml(pick.retrieval)} · ${escapeHtml(pick.chunking)} · ${escapeHtml(pick.distance)}</strong> — composite ${pick.composite}. ${escapeHtml(pick.reason)} The chat agent now uses this configuration.`:"";renderActiveConfig();showAdvice(result.recommendation);$("benchmark-status").textContent=`${result.results.length} configurations compared.`}catch(error){$("benchmark-status").textContent=error.message}finally{$("run").disabled=false}});
+const EMPTY_CHAT='<strong>Start a conversation</strong><span>Load the sample corpus, run the comparison, then ask something like “What is self-attention?” or tell the agent “Remember that I prefer short answers.”</span>';
+function resetChat(){state.messages=[];const empty=document.createElement("div");empty.className="empty-chat";empty.id="empty-chat";empty.innerHTML=EMPTY_CHAT;$("chat").replaceChildren(empty)}
+function md(text){return escapeHtml(text).replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/^[-*] (.*)$/gm,"• $1").replace(/\n/g,"<br>")}
+function activeStrategy(){const value=$("strategy-select").value;const base=state.selection;if(value==="auto")return base?{retrieval:base.retrieval,chunking:base.chunking,distance:base.distance}:null;const distance=value==="BM25 keyword"?"n/a (BM25)":(base&&base.distance!=="n/a (BM25)"?base.distance:"cosine");return{retrieval:value,chunking:base?base.chunking:"recursive",distance}}
+function strategyLabel(s){return `${s.retrieval} · ${s.chunking}${s.retrieval==="BM25 keyword"?"":" · "+s.distance}`}
+function renderActiveConfig(){const s=activeStrategy();$("active-config").textContent=s?`Using ${strategyLabel(s)}.`:"No benchmark yet — the agent uses the heuristic recommendation for your corpus."}
+function renderMemories(){const list=$("memory-list");$("memory-count").textContent=String(state.memories.length);if(!state.memories.length){list.innerHTML='<li class="none">Nothing remembered yet.</li>';return}list.innerHTML=state.memories.map((fact,index)=>`<li><span>${escapeHtml(fact)}</span><button type="button" data-forget="${index}" aria-label="Forget: ${escapeHtml(fact)}">×</button></li>`).join("")}
+function renderSources(sources){if(!sources||!sources.length)return"";return `<details><summary>Retrieved passages (${sources.length})</summary><div class="sources">${sources.map(s=>`<div class="src"><b>${escapeHtml(s.source)}</b>${s.score!=null?` · score ${s.score}`:""} — ${escapeHtml(s.snippet.slice(0,280))}${s.snippet.length>280?"…":""}</div>`).join("")}</div></details>`}
+function renderAgent(r){const modeLabel=r.llm?"LLM agent":"Extractive fallback";return `<div class="meta"><span class="pill win">${modeLabel}</span><span class="pill">${escapeHtml(strategyLabel(r.strategy))}</span></div><div>${md(r.answer)}</div>${r.notice?`<p class="notice">${escapeHtml(r.notice)}</p>`:""}${renderSources(r.sources)}`}
+function renderCandidate(c,winner){const isWinner=c.strategy===winner;const m=c.metrics;return `<div class="cand${isWinner?" winner":""}"><div class="cand-head"><strong>${escapeHtml(c.strategy)}</strong><span>${isWinner?'<span class="pill win">Winner</span> ':""}<span class="pill">${c.judge_score!=null?c.judge_score+"/10":"unscored"}</span></span></div><div class="small">${escapeHtml(c.label)}</div><div class="cand-body">${md(c.answer)}</div><div class="stats"><span class="pill">coverage ${Math.round(m.coverage*100)}%</span><span class="pill">relevance ${m.relevance}</span><span class="pill">${c.sources.length} passages</span><span class="pill">${c.latency_ms} ms</span><span class="pill">${c.mode==="llm"?"LLM answer":"extractive"}</span></div>${c.judge_note?`<p class="note">${escapeHtml(c.judge_note)}</p>`:""}${renderSources(c.sources)}</div>`}
+function renderCompare(r){const judge=r.verdict.judge==="llm"?"LLM judge":"Local judge";return `<div class="meta"><span class="pill win">Best: ${escapeHtml(r.winner)}</span><span class="pill">${judge}</span><span class="pill">${r.candidates.length} strategies compared</span></div><div>${md(r.answer)}</div><div class="reason"><strong>Why this won:</strong> ${escapeHtml(r.verdict.reason)}</div>${r.notice?`<p class="notice">${escapeHtml(r.notice)}</p>`:""}<details><summary>Compare all ${r.candidates.length} strategy responses</summary><div class="arena">${r.candidates.map(c=>renderCandidate(c,r.winner)).join("")}</div></details>`}
+function appendBubble(role,html){$("empty-chat")?.remove();const div=document.createElement("div");div.className=`bubble ${role}`;div.innerHTML=html;$("chat").appendChild(div);div.scrollIntoView({block:"nearest"});return div}
+function appendMessage(role,text){return appendBubble(role,role==="assistant"?md(text):escapeHtml(text))}
+function autosize(){const p=$("prompt");p.style.height="auto";p.style.height=Math.min(p.scrollHeight,160)+"px"}
+async function sendMessage(){if(state.busy)return;const question=$("prompt").value.trim();if(!question)return;if(!state.files.length){appendMessage("assistant",state.largeUploads.length?"Your large file is stored privately, but large-file indexing is not enabled yet. Chat currently searches extracted text up to 1.5 MB.":"Upload documents or load the sample corpus before chatting.");return}const history=state.messages.slice(-12);appendMessage("user",question);$("prompt").value="";autosize();state.busy=true;$("send").disabled=true;const reply=appendBubble("assistant",`<span class="typing">${state.mode==="compare"?"Answering with every strategy, then judging…":"Thinking…"}</span>`);try{const result=await api("/api/chat",{...payload(),question,mode:state.mode,history,memories:state.memories,strategy:activeStrategy(),leaderboard:state.leaderboard,top_k:topK()});reply.innerHTML=result.mode==="compare"?renderCompare(result):renderAgent(result);state.messages.push({role:"user",content:question},{role:"assistant",content:result.answer.slice(0,4000)});state.messages=state.messages.slice(-12);state.memories=result.memories||state.memories;renderMemories()}catch(error){reply.textContent=error.message}finally{state.busy=false;$("send").disabled=false;reply.scrollIntoView({block:"nearest"})}}
+$("chat-form").addEventListener("submit",event=>{event.preventDefault();sendMessage()});
+$("prompt").addEventListener("keydown",event=>{if(event.key!=="Enter"||event.shiftKey)return;if(event.isComposing||event.keyCode===229)return;event.preventDefault();sendMessage()});
+$("prompt").addEventListener("input",autosize);
+document.querySelectorAll(".mode-toggle button").forEach(button=>button.addEventListener("click",()=>{state.mode=button.dataset.mode;document.querySelectorAll(".mode-toggle button").forEach(b=>b.setAttribute("aria-checked",String(b===button)))}));
+$("strategy-select").addEventListener("change",renderActiveConfig);
+$("memory-list").addEventListener("click",event=>{const index=event.target.closest("[data-forget]")?.dataset.forget;if(index==null)return;state.memories.splice(Number(index),1);renderMemories()});
+$("clear-memory").addEventListener("click",()=>{state.memories=[];renderMemories()});
+$("clear-chat").addEventListener("click",resetChat);
+renderMemories();renderActiveConfig();
 </script></body></html>'''
